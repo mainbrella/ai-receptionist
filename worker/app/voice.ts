@@ -92,7 +92,10 @@ export async function handleVoiceRequest(request: Request, env: Env, ctx: Execut
   if (!match[2] && request.method === "DELETE") {
     if (call.status === "active") return authJson({ error: "call_active" }, 409);
     // Purge the temporary Agent before redaction, so it cannot re-persist a transcript.
-    await callStub(env, call.id).purgeCall();
+    const stub = callStub(env, call.id);
+    const ended = await stub.fetch(new Request("https://voice.internal/end", { method: "POST" }));
+    if (!ended.ok) return authJson({ error: "voice_unavailable" }, 503);
+    await stub.purgeCall();
     await env.DB.prepare("UPDATE voice_calls SET transcript_json='[]',config_json='{}',deleted_at=? WHERE id=? AND status!='active'")
       .bind(new Date().toISOString(), call.id).run();
     return new Response(null, { status: 204 });

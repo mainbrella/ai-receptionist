@@ -74,10 +74,15 @@ function bridgeTwilio(env: Env,callId: string,providerCallId: string,ctx?: Execu
     if (ended) return;
     ended=true;
     clearTimeout(startTimer);clearTimeout(endTimer);
-    upstream?.close(1000,'Call ended');socket.close(1000,'Call ended');
-    if (failed) await env.DB.prepare("UPDATE voice_calls SET status='failed',ended_at=? WHERE id=? AND status='active'")
-      .bind(new Date().toISOString(),callId).run();
-    await callStub(env,callId).fetch(new Request('https://voice.internal/end',{method:'POST'}));
+    // The call remains active until its Durable Object confirms carrier hangup.
+    // Publishing a terminal row first would allow deletion of pending retries.
+    try {
+      await callStub(env,callId).fetch(new Request('https://voice.internal/end',{
+        method:'POST',headers:{'x-call-failed':String(failed)},
+      }));
+    } finally {
+      upstream?.close(1000,'Call ended');socket.close(1000,'Call ended');
+    }
   };
   const startTimer=setTimeout(()=>{ background(finish(true)); },5000);
   const endTimer=setTimeout(()=>{ background(finish()); },MAX_CALL_MS);

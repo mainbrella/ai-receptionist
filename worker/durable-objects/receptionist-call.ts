@@ -16,6 +16,7 @@ interface CallState {
   phoneProvider: VoiceCallRow["phone_provider"];
   providerCallId: string | null;
   phoneEnded?: boolean;
+  finalized?: boolean;
   endedAt?: string;
 }
 interface SocketState { accepted: boolean; started: boolean; ready?: boolean }
@@ -114,7 +115,10 @@ export class ReceptionistCall extends VoiceAgent<Cloudflare.Env & Env, CallState
       }
       return new Response(null, { status: 204 });
     }
-    if (path === "/end" && request.method === "POST") { await this.finish(); return new Response(null, { status: 204 }); }
+    if (path === "/end" && request.method === "POST") {
+      await this.finish(request.headers.get("x-call-failed") === "true");
+      return new Response(null, { status: 204 });
+    }
     return new Response(null, { status: 404 });
   }
 
@@ -199,13 +203,21 @@ export class ReceptionistCall extends VoiceAgent<Cloudflare.Env & Env, CallState
   async expireCall() { await this.finish(); }
   async purgeCall(): Promise<void> {
     if (!this.state?.closed) return;
+    if (!this.state.finalized || this.finalization) await this.finish();
     if (this.activeInference) { await this.schedule(15, "purgeCall"); return; }
     await this.flush();
     await this.destroy();
   }
   private async finish(failed = false): Promise<void> {
     if (!this.state) return;
-    if (this.finalization) return this.finalization;
+    // A socket close may arrive before its bridge reports a media error.
+    // Failure is monotonic, including a report that arrives after finalization.
+    if (failed && !this.state.failed) this.setState({ ...this.state, failed: true });
+    if (this.finalization) {
+      await this.finalization;
+      if (failed) await this.finish();
+      return;
+    }
     const finalization = Promise.resolve().then(async () => {
       if (!this.state!.closed) {
         this.setState({ ...this.state!, closed: true, failed: this.state!.failed || failed, endedAt: new Date().toISOString() });
@@ -219,8 +231,9 @@ export class ReceptionistCall extends VoiceAgent<Cloudflare.Env & Env, CallState
         this.setState({ ...this.state!, phoneEnded: true });
       }
       await this.flush(true);
-      await this.env.DB.prepare("UPDATE voice_calls SET status=?,ended_at=COALESCE(ended_at,?) WHERE id=? AND status='active'")
+      await this.env.DB.prepare("UPDATE voice_calls SET status=CASE WHEN status='failed' THEN status ELSE ? END,ended_at=COALESCE(ended_at,?) WHERE id=? AND deleted_at IS NULL")
         .bind(this.state!.failed ? "failed" : "completed", this.state!.endedAt!, this.state!.callId).run();
+      this.setState({ ...this.state!, finalized: true });
       await this.schedule(60, "purgeCall", undefined, { idempotent: true });
     });
     this.finalization = finalization;

@@ -28,15 +28,33 @@ const ai = {
 };
 
 export class ReceptionistCall extends BaseCall {
+  private hangupFailures: number;
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, { ...env, AI: ai } as unknown as Env);
+    this.hangupFailures = Number((env as Env & { TEST_HANGUP_FAILURES?: string }).TEST_HANGUP_FAILURES ?? "0");
   }
-  protected async hangupPhone(_callId: string) { return { durationSeconds: 1, billableMinutes: 1 }; }
+  protected async hangupPhone(_callId: string) {
+    if (this.hangupFailures > 0) { this.hangupFailures--; throw new Error("Fixture carrier outage"); }
+    return { durationSeconds: 1, billableMinutes: 1 };
+  }
+  async allowHangup() { this.hangupFailures = 0; }
 }
 
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext) {
     const path = new URL(request.url).pathname;
+    const inspect = path.match(/^\/__test_state\/([^/]+)$/);
+    if (inspect) return Response.json(await env.RECEPTIONIST_CALL.get(env.RECEPTIONIST_CALL.idFromName(inspect[1])).state);
+    const release = path.match(/^\/__test_allow_hangup\/([^/]+)$/);
+    if (release) {
+      const stub = env.RECEPTIONIST_CALL.get(env.RECEPTIONIST_CALL.idFromName(release[1])) as unknown as ReceptionistCall;
+      await stub.allowHangup();
+      return new Response(null, { status: 204 });
+    }
+    const fail = path.match(/^\/__test_fail\/([^/]+)$/);
+    if (fail) return env.RECEPTIONIST_CALL.get(env.RECEPTIONIST_CALL.idFromName(fail[1])).fetch(new Request("https://voice.internal/end", {
+      method: "POST", headers: { "x-call-failed": "true" },
+    }));
     if (path === "/__test_cleanup") { await cleanup(env); return new Response(null, { status: 204 }); }
     const purge = path.match(/^\/__test_purge\/([^/]+)$/);
     if (purge) {

@@ -5,7 +5,7 @@
   --ink: #f2f4f7;
   --muted: #a4adb8;
   --blue: #3fb5ff;
-  --button-blue: #087ef0;
+  --button-blue: #086bd4;
   --line: #2b323b;
   --control-border: #46515e;
   font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
@@ -33,7 +33,7 @@ p, h1, h2, h3 { margin: 0; }
 .dashboard-status { color: var(--muted); font-size: 13px; line-height: 1.6; }
 .dashboard-error { margin-top: 12px; padding: 10px 12px; border-left: 2px solid #ffb4ab; background: #ffb4ab08; color: #ffb4ab; font-size: 13px; }
 .button { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 44px; padding: 8px 16px; border: 1px solid transparent; border-radius: 6px; background: var(--button-blue); color: white; font-size: 13px; font-weight: 600; cursor: pointer; }
-.button:hover:not(:disabled) { background: #096fd3; }
+.button:hover:not(:disabled) { background: #075bb5; }
 .button:disabled, .quiet-button:disabled { opacity: .5; cursor: not-allowed; }
 .quiet-button { display: inline-flex; align-items: center; justify-content: center; min-height: 44px; padding: 8px 12px; border: 1px solid var(--line); border-radius: 6px; background: transparent; color: var(--ink); font-size: 13px; font-weight: 500; cursor: pointer; transition: background 160ms ease, border-color 160ms ease; }
 .quiet-button:hover:not(:disabled) { border-color: var(--control-border); background: var(--surface); }

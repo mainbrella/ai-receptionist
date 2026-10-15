@@ -1,0 +1,47 @@
+{
+  // Packaging template. Run `npm run catalog:manifest` after committing the
+  // source. It replaces the sentinel SHA in dist/catalog/; never submit this
+  // unpinned template to the catalog.
+  "$schema": "https://appflare.github.io/catalog/schema/v1.json",
+  "slug": "mainbrella-voice",
+  "name": "Mainbrella Voice",
+  "summary": "An AI receptionist with browser and text tests, incoming Twilio or Telnyx calls, and private call transcripts in your own Cloudflare account.",
+  "tagline": "Answer calls with an AI receptionist you host yourself",
+  "repo": "mainbrella/ai-receptionist",
+  "homepage": "https://github.com/mainbrella/ai-receptionist",
+  "license": "GPL-3.0-only",
+  "categories": ["ai", "business"],
+  "authors": [{ "name": "Mainbrella", "github": "mainbrella", "url": "https://mainbrella.com" }],
+  "maintainers": ["andrewarrow"],
+  "source": { "ref": "main", "sha": "0000000000000000000000000000000000000000" },
+  "install": {
+    "packageManager": "npm",
+    "wranglerConfig": "wrangler.jsonc",
+    "buildCommand": "npm run build:client",
+    "health": { "path": "/health" }
+  },
+  "plan": "paid",
+  "requires": ["workers-ai", "access"],
+  "access": { "bypass": ["/health", "/voice/twilio/*", "/voice/telnyx/*"] },
+  "secrets": [
+    { "name": "ADMIN_PASSWORD", "label": "Admin password", "help": "Sign in to the receptionist workspace. Use at least 16 characters.", "generate": "password" },
+    { "name": "TWILIO_AUTH_TOKEN", "label": "Twilio auth token", "help": "Optional. Used to verify incoming Twilio calls and end them.", "optional": true, "link": { "label": "Twilio console", "url": "https://console.twilio.com" } },
+    { "name": "TELNYX_API_KEY", "label": "Telnyx API key", "help": "Optional. A v2 API key with access to your TeXML calls.", "optional": true, "link": { "label": "Telnyx portal", "url": "https://portal.telnyx.com" } }
+  ],
+  "vars": [
+    { "name": "VOICE_PUBLIC_ORIGIN", "label": "Public address", "help": "Exact HTTPS origin with no trailing slash. Used to verify carrier signatures.", "default": "{{appUrl}}" },
+    { "name": "VOICE_ENABLED", "label": "Calling", "type": "select", "default": "true", "options": [{ "value": "true", "label": "Enabled" }, { "value": "false", "label": "Disabled" }] },
+    { "name": "TRANSCRIPT_RETENTION_DAYS", "label": "Transcript retention in days", "help": "From 1 to 365. Old transcripts and saved call instructions are deleted daily. Invalid values use 30 days.", "default": "30" },
+    { "name": "TWILIO_ACCOUNT_SID", "label": "Twilio account SID", "help": "Starts with AC. Required when using Twilio.", "optional": true },
+    { "name": "TWILIO_PHONE_NUMBER", "label": "Twilio phone number", "help": "Incoming destination in E.164 format, such as +15551234567.", "optional": true },
+    { "name": "TWILIO_SIP_URI", "label": "Twilio SIP address", "help": "Optional alternative to a number: sip:receptionist@your-domain.sip.twilio.com.", "optional": true },
+    { "name": "TELNYX_PUBLIC_KEY", "label": "Telnyx public key", "help": "Base64 Ed25519 public key from Keys & Credentials. Required for Telnyx signatures.", "optional": true },
+    { "name": "TELNYX_ACCOUNT_SID", "label": "Telnyx account UUID", "help": "The AccountSid from your TeXML webhook, distinct from the application ID.", "optional": true },
+    { "name": "TELNYX_CONNECTION_ID", "label": "Telnyx TeXML application ID", "help": "Numeric application / connection ID.", "optional": true },
+    { "name": "TELNYX_PHONE_NUMBER", "label": "Telnyx phone number", "help": "Incoming destination in E.164 format.", "optional": true },
+    { "name": "TELNYX_SIP_URI", "label": "Telnyx SIP address", "help": "Optional alternative to a number: sip:receptionist@your-app.sip.telnyx.com.", "optional": true }
+  ],
+  "postInstall": [
+    { "type": "markdown", "content": "Open {{appUrl}}, sign in with the admin password, and save your receptionist. Test with your microphone or text. To receive phone calls, enter your optional carrier settings here, then copy the webhook from Phone connection into Twilio or a Telnyx TeXML application using HTTP POST. Cloudflare and your carrier bill you directly; no Mainbrella account is required." }
+  ]
+}

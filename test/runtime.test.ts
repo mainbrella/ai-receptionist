@@ -178,14 +178,118 @@ test("provider webhook authentication, destination matching and replay protectio
   assert.equal((await send(fields, "https://evil.example")).status, 403);
   assert.equal((await send({ ...fields, To: "+15559999999" })).status, 403);
   const accepted = await send(); assert.equal(accepted.status, 200);
-  assert.match(await accepted.text(), /<Connect><Stream url="wss:\/\/receptionist.example\/voice\/twilio\/media\//);
+  const twiml = await accepted.text();
+  assert.match(twiml, /<Connect><Stream url="wss:\/\/receptionist.example\/voice\/twilio\/media\//);
   assert.match(await (await send()).text(), /<Hangup \/>/);
   assert.equal((await f.db.prepare("SELECT COUNT(*) AS n FROM voice_calls WHERE provider_call_id=?").bind(SID).first())?.n, 1);
   const row = await f.db.prepare("SELECT id FROM voice_calls WHERE provider_call_id=?").bind(SID).first<{ id: string }>();
+  const mediaPath = `/voice/twilio/media/${row!.id}`;
+  const signature = getExpectedTwilioSignature(TWILIO_TOKEN, `${ORIGIN}${mediaPath}`, {});
+  const stream = await f.mf.dispatchFetch(`${ORIGIN}${mediaPath}`, { headers: { Upgrade: "websocket", "X-Twilio-Signature": signature } });
+  assert.equal(stream.status, 101);
+  const socket = stream.webSocket!;
+  const frames: string[] = [];
+  socket.addEventListener("message", (event) => { if (typeof event.data === "string") frames.push(event.data); });
+  socket.accept();
+  const streamSid = `MZ${"c".repeat(32)}`;
+  socket.send(JSON.stringify({ event: "start", start: { callSid: SID, accountSid: ACCOUNT, streamSid,
+    mediaFormat: { encoding: "audio/x-mulaw", sampleRate: 8000, channels: 1 },
+    customParameters: { token: twiml.match(/name="token" value="([a-f0-9]+)"/)![1] },
+  } }));
+  await until(() => frames.some((frame) => JSON.parse(frame).event === "media"), "Carrier greeting audio missing");
+  socket.send(JSON.stringify({ event: "media", streamSid, media: { track: "inbound", payload: btoa("\xff".repeat(160)) } }));
+  await until(async () => (await f.db.prepare("SELECT transcript_json FROM voice_calls WHERE id=?").bind(row!.id).first<{ transcript_json: string }>())?.transcript_json.includes("Could I leave a message?") ?? false, "Carrier audio transcript missing");
   await f.request(`/voice/calls/${row!.id}/end`, "POST", {});
   await f.request(`/voice/calls/${row!.id}`, "DELETE");
   assert.match(await (await send()).text(), /<Hangup \/>/);
   assert.equal((await f.db.prepare("SELECT COUNT(*) AS n FROM voice_calls WHERE provider_call_id=?").bind(SID).first())?.n, 1);
+});
+
+test("Telnyx verifies the raw signed webhook, timestamp, account and application", async (t) => {
+  const keys = await crypto.subtle.generateKey({ name: "Ed25519" }, true, ["sign", "verify"]);
+  const publicKey = Buffer.from(await crypto.subtle.exportKey("raw", keys.publicKey)).toString("base64");
+  const account = "11111111-1111-4111-8111-111111111111";
+  const connection = "123456789";
+  const f = await runtime(t, { TELNYX_API_KEY: "fixture-api-key", TELNYX_PUBLIC_KEY: publicKey,
+    TELNYX_ACCOUNT_SID: account, TELNYX_CONNECTION_ID: connection, TELNYX_PHONE_NUMBER: "+15557654321" });
+  await f.login(); await f.save();
+  const path = `/voice/telnyx/incoming/${AGENT}`;
+  const fields = { AccountSid: account, ConnectionId: connection, CallSid: "v3:fixture-call", To: "+15557654321" };
+  const send = async (values = fields, timestamp = Math.floor(Date.now() / 1000), tamper = false) => {
+    const body = new URLSearchParams(values).toString();
+    const signature = Buffer.from(await crypto.subtle.sign("Ed25519", keys.privateKey,
+      new TextEncoder().encode(`${timestamp}|${body}`))).toString("base64");
+    return f.mf.dispatchFetch(`${ORIGIN}${path}`, { method: "POST", headers: {
+      "Content-Type": "application/x-www-form-urlencoded", "telnyx-timestamp": String(timestamp), "telnyx-signature-ed25519": signature,
+    }, body: tamper ? `${body}&From=changed` : body });
+  };
+  assert.equal((await send(fields, Math.floor(Date.now() / 1000) - 600)).status, 403);
+  assert.equal((await send(fields, Math.floor(Date.now() / 1000), true)).status, 403);
+  assert.equal((await send({ ...fields, ConnectionId: "999" })).status, 403);
+  const response = await send(); assert.equal(response.status, 200);
+  assert.match(await response.text(), /codec="PCMU"/);
+  assert.match(await (await send()).text(), /<Hangup \/>/);
+});
+
+test("failed phone cleanup stays active and non-deletable until the provider hangup retry succeeds", async (t) => {
+  const f = await runtime(t, { TEST_HANGUP_FAILURES: "100" }); await f.login(); await f.save();
+  const path = `/voice/twilio/incoming/${AGENT}`;
+  const fields = { AccountSid: ACCOUNT, CallSid: SID, To: "+15551234567" };
+  const incoming = await f.mf.dispatchFetch(`${ORIGIN}${path}`, { method: "POST", headers: {
+    "Content-Type": "application/x-www-form-urlencoded", "X-Twilio-Signature": getExpectedTwilioSignature(TWILIO_TOKEN, `${ORIGIN}${path}`, fields),
+  }, body: new URLSearchParams(fields).toString() });
+  assert.equal(incoming.status, 200);
+  const twiml = await incoming.text();
+  const row = await f.db.prepare("SELECT id FROM voice_calls WHERE provider_call_id=?").bind(SID).first<{ id: string }>();
+  const mediaPath = `/voice/twilio/media/${row!.id}`;
+  const response = await f.mf.dispatchFetch(`${ORIGIN}${mediaPath}`, { headers: { Upgrade: "websocket",
+    "X-Twilio-Signature": getExpectedTwilioSignature(TWILIO_TOKEN, `${ORIGIN}${mediaPath}`, {}),
+  } });
+  assert.equal(response.status, 101);
+  const frames: string[] = [];
+  response.webSocket!.addEventListener("message", (event) => { if (typeof event.data === "string") frames.push(event.data); });
+  response.webSocket!.accept();
+  const streamSid = `MZ${"d".repeat(32)}`;
+  response.webSocket!.send(JSON.stringify({ event: "start", start: { callSid: SID, accountSid: ACCOUNT, streamSid,
+    mediaFormat: { encoding: "audio/x-mulaw", sampleRate: 8000, channels: 1 },
+    customParameters: { token: twiml.match(/name="token" value="([a-f0-9]+)"/)![1] },
+  } }));
+  await until(() => frames.some((frame) => JSON.parse(frame).event === "media"), "Carrier stream was not established");
+  response.webSocket!.send(JSON.stringify({ event: "invalid_event", streamSid }));
+  await until(async () => {
+    const state = await (await f.request(`/__test_state/${row!.id}`)).json() as { closed?: boolean; phoneEnded?: boolean };
+    return Boolean(state.closed && !state.phoneEnded);
+  }, "Carrier hangup failure did not leave retry state");
+  assert.equal((await f.db.prepare("SELECT status FROM voice_calls WHERE id=?").bind(row!.id).first())?.status, "active");
+  assert.equal((await f.request(`/voice/calls/${row!.id}`, "DELETE")).status, 409);
+  assert.equal((await f.request(`/__test_allow_hangup/${row!.id}`)).status, 204);
+  assert.equal((await f.request(`/voice/calls/${row!.id}/end`, "POST", {})).status, 200);
+  assert.equal((await f.db.prepare("SELECT status FROM voice_calls WHERE id=?").bind(row!.id).first())?.status, "failed");
+  assert.equal((await f.request(`/voice/calls/${row!.id}`, "DELETE")).status, 204);
+});
+
+test("a late bridge failure upgrades a completed call and cannot later be overwritten by a normal close", async (t) => {
+  const f = await runtime(t); await f.login(); await f.save();
+  const created = await f.create();
+  await f.request(`/voice/calls/${created.call.id}/end`, "POST", {});
+  assert.equal((await f.db.prepare("SELECT status FROM voice_calls WHERE id=?").bind(created.call.id).first())?.status, "completed");
+  assert.equal((await f.request(`/__test_fail/${created.call.id}`)).status, 204);
+  await f.request(`/voice/calls/${created.call.id}/end`, "POST", {});
+  assert.equal((await f.db.prepare("SELECT status FROM voice_calls WHERE id=?").bind(created.call.id).first())?.status, "failed");
+});
+
+test("model failures end a call without disclosing provider errors", async (t) => {
+  const f = await runtime(t); await f.login(); await f.save();
+  const created = await f.create();
+  const { transport } = clientTransport(f, created.websocketUrl);
+  const client = new VoiceClient({ agent: "ReceptionistCall", transport });
+  const messages: string[] = [];
+  client.addEventListener("error", (error) => { if (error) messages.push(error); });
+  t.after(() => client.disconnect()); client.connect();
+  await until(() => client.transcript.length === 1, "Greeting missing");
+  client.sendText("cause model failure");
+  await until(async () => (await f.db.prepare("SELECT status FROM voice_calls WHERE id=?").bind(created.call.id).first())?.status === "failed", "Failed inference did not close call");
+  assert.ok(messages.every((message) => !message.includes("Private fixture")));
 });
 
 test("retention redacts old transcripts and instructions while preserving webhook tombstones", async (t) => {

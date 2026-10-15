@@ -1,0 +1,21 @@
+# Copy to .dev.vars and replace this password before starting local development.
+ADMIN_PASSWORD="replace-with-a-random-password-at-least-16-characters"
+
+# Browser and text tests do not need a phone carrier. Local Workers AI calls
+# use Cloudflare's remote binding and consume your account's AI allowance.
+# Phone webhooks need a deployed HTTPS origin, not this local address.
+VOICE_PUBLIC_ORIGIN="http://localhost:8787"
+
+# Optional Twilio connection:
+# TWILIO_AUTH_TOKEN=""
+# TWILIO_ACCOUNT_SID=""
+# TWILIO_PHONE_NUMBER=""
+# TWILIO_SIP_URI=""
+
+# Optional Telnyx connection:
+# TELNYX_API_KEY=""
+# TELNYX_PUBLIC_KEY=""
+# TELNYX_ACCOUNT_SID=""
+# TELNYX_CONNECTION_ID=""
+# TELNYX_PHONE_NUMBER=""
+# TELNYX_SIP_URI=""

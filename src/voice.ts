@@ -51,6 +51,7 @@ let config: VoiceConfig | null = null;
 let agent: Receptionist | null = null;
 let client: VoiceClient | null = null;
 let activeCall: VoiceCall | null = null;
+let displayedCallId: string | null = null;
 let savedValue = '';
 let saving = false;
 let starting = false;
@@ -132,11 +133,11 @@ function renderPhone() {
   if (!config) return;
   const renderProvider = (prefix: 'twilio' | 'telnyx', phone: { configured: boolean; webhookUrl: string | null; phoneNumber: string | null; sipUri: string | null }) => {
     const status = element(`voice-${prefix}-status`);
-    status.textContent = phone.configured ? 'Connected' : 'Not connected';
+    status.textContent = phone.configured ? 'Configured' : 'Not configured';
     status.dataset.connected = String(phone.configured);
     element(`voice-${prefix}-description`).textContent = phone.configured
-      ? 'Incoming calls to this number are answered by your saved receptionist.'
-      : `Configure ${prefix === 'twilio' ? 'Twilio' : 'Telnyx'} credentials and a number in Appflare settings to receive calls.`;
+      ? 'Set the incoming call webhook at your carrier, then call your number or SIP address to test.'
+      : `Configure ${prefix === 'twilio' ? 'Twilio' : 'Telnyx'} credentials and a number or SIP address in Appflare settings to receive calls.`;
     const phoneNumber = element(`voice-${prefix}-number`);
     phoneNumber.hidden = !phone.phoneNumber;
     phoneNumber.querySelector('dd')!.textContent = phone.phoneNumber ?? '';
@@ -263,6 +264,7 @@ async function beginCall(): Promise<VoiceClient | null> {
     if (disposed || controller.signal.aborted) return null;
     const session = await api.start(selectedMode);
     activeCall = session.call;
+    displayedCallId = session.call.id;
     if (disposed || controller.signal.aborted) { await finishCall(); return null; }
     controls();
     const current = new VoiceClient({ agent: 'ReceptionistCall', name: session.call.id,
@@ -516,6 +518,12 @@ deleteCall.addEventListener('click', async () => {
   deleteStatus.textContent = 'Deleting transcript…';
   try {
     await api.remove(id);
+    if (displayedCallId === id) {
+      renderLiveTranscript([]);
+      duration.hidden = true;
+      metricsLabel.hidden = true;
+      displayedCallId = null;
+    }
     dialog.close();
     callsFeedback.textContent = 'Transcript deleted.';
     await loadCalls();

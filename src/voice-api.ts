@@ -81,7 +81,7 @@ export function createVoiceAPI(origin: string, fetcher: typeof fetch = fetch) {
     saveAgent: (agent: Omit<Receptionist, 'id' | 'updatedAt'>) => request<{ agent: Receptionist }>('/agent', 'PUT', agent),
     calls: () => request<{ calls: VoiceCall[] }>('/calls'),
     call: (id: string) => request<{ call: VoiceCall }>(`/calls/${encodeURIComponent(id)}`),
-    remove: (id: string) => request<{ ok: true }>(`/calls/${encodeURIComponent(id)}`, 'DELETE'),
+    remove: (id: string) => request<void>(`/calls/${encodeURIComponent(id)}`, 'DELETE'),
     start: (channel: 'browser' | 'text') => request<{ call: VoiceCall; websocketUrl: string }>('/calls', 'POST', { channel }),
     end: (id: string, keepalive = false) => request<{ call: VoiceCall }>(`/calls/${encodeURIComponent(id)}/end`, 'POST', {}, keepalive),
   };
