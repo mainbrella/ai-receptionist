@@ -1,0 +1,33 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "mainbrella-voice",
+  "main": "worker/index.ts",
+  "compatibility_date": "2026-09-18",
+  "compatibility_flags": ["nodejs_compat"],
+  "assets": {
+    "directory": "./dist/client",
+    "binding": "ASSETS",
+    "run_worker_first": ["/auth/*", "/voice/*", "/health", "/agents/*", "/__*"]
+  },
+  "ai": { "binding": "AI" },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "mainbrella-voice",
+      "database_id": "",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "durable_objects": {
+    "bindings": [{ "name": "RECEPTIONIST_CALL", "class_name": "ReceptionistCall" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["ReceptionistCall"] }],
+  "triggers": { "crons": ["17 3 * * *"] },
+  "vars": {
+    "VOICE_ENABLED": "true",
+    "VOICE_PUBLIC_ORIGIN": "",
+    "TRANSCRIPT_RETENTION_DAYS": "30"
+  },
+  "secrets": { "required": ["ADMIN_PASSWORD"] },
+  "observability": { "enabled": true }
+}

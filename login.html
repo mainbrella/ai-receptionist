@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#0d1014" />
+    <meta name="robots" content="noindex" />
+    <link rel="stylesheet" href="/base.css" />
+    <link rel="stylesheet" href="/voice.css" />
+    <title>Sign in · Mainbrella Voice</title>
+  </head>
+  <body class="app-body">
+    <a class="skip-link" href="#main">Skip to content</a>
+    <header class="app-header"><a class="brand" href="/">Mainbrella Voice</a></header>
+    <main id="main" class="login-main">
+      <section class="login-content" aria-labelledby="login-title" aria-busy="true">
+        <h1 id="login-title">Sign in</h1>
+        <p id="login-status" class="dashboard-status" role="status">Checking your session…</p>
+        <p id="login-error" class="dashboard-error" role="alert" hidden></p>
+        <form id="login-form" class="login-form" hidden>
+          <label for="login-password">Password</label>
+          <input id="login-password" name="password" type="password" autocomplete="current-password" maxlength="128" required />
+          <p class="voice-hint">Use the password provided by your administrator. Sign-in stays on this device.</p>
+          <button id="login-submit" class="button" type="submit">Sign in</button>
+        </form>
+      </section>
+    </main>
+    <script type="module" src="/src/login.ts"></script>
+  </body>
+</html>

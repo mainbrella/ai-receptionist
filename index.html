@@ -1,0 +1,177 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#0d1014" />
+    <meta name="description" content="Configure and test your AI receptionist, connect a phone number, and review call transcripts." />
+    <meta name="robots" content="noindex" />
+    <link rel="stylesheet" href="/base.css" />
+    <link rel="stylesheet" href="/voice.css" />
+    <title>Voice · Mainbrella</title>
+  </head>
+  <body class="app-body">
+    <a class="skip-link" href="#main">Skip to content</a>
+    <header class="app-header">
+      <a class="brand" href="/" aria-label="Mainbrella Voice home"><span>Mainbrella Voice</span></a>
+      <button id="voice-sign-out" class="quiet-button" type="button" hidden>Sign out</button>
+    </header>
+    <main id="main" class="dashboard-main voice-main" aria-busy="true">
+      <div class="voice-page-heading">
+        <h1>Voice</h1>
+        <p class="dashboard-status">Your AI receptionist, calls, and transcripts.</p>
+      </div>
+      <p id="voice-loading" class="dashboard-status" role="status">Checking your session…</p>
+      <p id="voice-error" class="dashboard-error" role="alert" hidden></p>
+      <button id="voice-retry" class="quiet-button" type="button" hidden>Retry</button>
+      <div id="voice-signin" class="voice-signin" hidden>
+        <p>Sign in to configure your receptionist and save call history.</p>
+        <a class="button" href="/login.html">Sign in</a>
+      </div>
+      <div id="voice-content" hidden>
+        <div class="voice-tabs" role="tablist" aria-label="Voice workspace">
+          <button id="tab-agent" type="button" role="tab" aria-selected="true" aria-controls="panel-agent">Receptionist</button>
+          <button id="tab-calls" type="button" role="tab" aria-selected="false" aria-controls="panel-calls" tabindex="-1">Call history</button>
+          <button id="tab-phone" type="button" role="tab" aria-selected="false" aria-controls="panel-phone" tabindex="-1">Phone connection</button>
+        </div>
+        <section id="panel-agent" role="tabpanel" aria-labelledby="tab-agent">
+          <div class="voice-workspace">
+            <form id="voice-agent-form" class="voice-agent-form">
+              <h2>Receptionist settings</h2>
+              <fieldset id="voice-fields" disabled>
+                <legend class="visually-hidden">Receptionist configuration</legend>
+                <div class="voice-field-pair">
+                  <div class="voice-field">
+                    <label for="voice-name">Agent name</label>
+                    <input id="voice-name" name="name" maxlength="80" required value="Receptionist" autocomplete="off" />
+                  </div>
+                  <div class="voice-field">
+                    <label for="voice-business">Business name</label>
+                    <input id="voice-business" name="businessName" maxlength="120" required placeholder="Your business" autocomplete="organization" />
+                  </div>
+                </div>
+                <div class="voice-field">
+                  <label for="voice-greeting">Greeting</label>
+                  <textarea id="voice-greeting" name="greeting" rows="3" maxlength="500" required aria-describedby="voice-greeting-hint">Hi, you’re speaking with our AI receptionist. How can I help?</textarea>
+                  <p id="voice-greeting-hint" class="voice-hint">The first thing callers hear. Let them know they’re speaking with AI.</p>
+                </div>
+                <div class="voice-field">
+                  <label for="voice-instructions">Instructions &amp; business information</label>
+                  <textarea id="voice-instructions" name="instructions" rows="8" maxlength="8000" required aria-describedby="voice-instructions-hint">Be a friendly, concise receptionist. Ask one question at a time.
+
+Answer using only the business information provided here. If you don’t know the answer, say so and offer to take a message. Ask for the caller’s name, reason for calling, and contact details.
+
+Never invent opening hours, prices, availability, or account information. Do not claim to book appointments or transfer calls.</textarea>
+                  <p id="voice-instructions-hint" class="voice-hint">Add your hours, services, and FAQs. Scheduling, account lookups, and human transfers aren’t connected yet.</p>
+                </div>
+                <div class="voice-field voice-voice-field">
+                  <label for="voice-speaker">Voice</label>
+                  <select id="voice-speaker" name="voice">
+                    <option value="asteria">Asteria · English</option>
+                    <option value="luna">Luna · English</option>
+                    <option value="athena">Athena · English</option>
+                  </select>
+                </div>
+                <div class="voice-save-row">
+                  <button id="voice-save" class="button" type="submit">Save receptionist</button>
+                  <p id="voice-save-status" class="voice-hint" role="status"></p>
+                </div>
+              </fieldset>
+            </form>
+            <section class="voice-test" aria-labelledby="voice-test-title">
+              <div class="voice-test-heading">
+                <h2 id="voice-test-title">Test your receptionist</h2>
+                <fieldset id="voice-test-mode" class="voice-mode">
+                  <legend class="visually-hidden">Test mode</legend>
+                  <label><input type="radio" name="mode" value="browser" checked /><span>Voice</span></label>
+                  <label><input type="radio" name="mode" value="text" /><span>Text</span></label>
+                </fieldset>
+              </div>
+              <div class="voice-call-state">
+                <span id="voice-state-dot" class="voice-state-dot" aria-hidden="true"></span>
+                <p id="voice-call-status" role="status">Save your receptionist to start testing.</p>
+                <span id="voice-call-duration" class="voice-duration" hidden></span>
+              </div>
+              <p id="voice-test-hint" class="voice-hint">Use your microphone to have a real conversation.</p>
+              <div id="voice-call-controls" class="voice-call-controls">
+                <button id="voice-start" class="button" type="button" disabled>
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10v2a7 7 0 0 0 14 0v-2M12 19v3M8 22h8"/></svg>
+                  Start test call
+                </button>
+                <button id="voice-mute" class="quiet-button" type="button" aria-pressed="false" hidden>Mute mic</button>
+                <button id="voice-end" class="quiet-button voice-end" type="button" hidden>End call</button>
+              </div>
+              <p id="voice-test-error" class="dashboard-error" role="alert" hidden></p>
+              <div id="voice-transcript-scroll" class="voice-transcript-scroll">
+                <p id="voice-transcript-empty" class="voice-hint">Your test conversation will appear here.</p>
+                <div id="voice-transcript" class="voice-transcript" role="log" aria-label="Test transcript" aria-live="polite" aria-relevant="additions text"></div>
+                <p id="voice-interim" class="voice-interim" hidden></p>
+              </div>
+              <form id="voice-message-form" class="voice-message-form" hidden>
+                <label class="visually-hidden" for="voice-message">Message to receptionist</label>
+                <input id="voice-message" name="message" placeholder="Type a message…" maxlength="2000" required autocomplete="off" />
+                <button id="voice-send" class="quiet-button" type="submit" disabled>Send</button>
+              </form>
+              <p id="voice-metrics" class="voice-hint voice-metrics" hidden></p>
+              <p class="voice-hint voice-test-footnote">Tests use your saved settings and are saved in call history.</p>
+            </section>
+          </div>
+        </section>
+        <section id="panel-calls" role="tabpanel" aria-labelledby="tab-calls" hidden>
+          <div class="voice-section-heading">
+            <h2>Recent calls</h2>
+            <button id="voice-refresh-calls" class="quiet-button" type="button">Refresh</button>
+          </div>
+          <p id="voice-calls-feedback" class="voice-hint" role="status"></p>
+          <p id="voice-calls-status" class="dashboard-status" role="status">No calls yet.</p>
+          <div id="voice-calls-scroll" class="voice-calls-scroll" hidden>
+            <table class="voice-calls-table">
+              <caption class="visually-hidden">Your 50 most recent calls</caption>
+              <thead><tr><th scope="col">Started</th><th scope="col">Channel</th><th scope="col">Duration</th><th scope="col">Status</th><th scope="col"><span class="visually-hidden">Transcript</span></th></tr></thead>
+              <tbody id="voice-calls-list"></tbody>
+            </table>
+          </div>
+        </section>
+        <section id="panel-phone" class="voice-phone" role="tabpanel" aria-labelledby="tab-phone" hidden>
+          <h2>Phone connections</h2>
+          <p class="dashboard-status">Configure provider credentials in Appflare settings or <code>.dev.vars</code>. Credentials are never entered here.</p>
+          <div class="voice-provider">
+            <div class="voice-section-heading"><h3>Twilio</h3><span id="voice-twilio-status" class="voice-connection-status">Not connected</span></div>
+            <p id="voice-twilio-description" class="dashboard-status"></p>
+            <dl id="voice-twilio-number" class="voice-phone-number" hidden><dt>Phone number</dt><dd></dd></dl>
+            <div id="voice-twilio-webhook" class="voice-field" hidden>
+              <label for="voice-twilio-webhook-url">Incoming call webhook</label>
+              <div class="voice-copy-row"><input id="voice-twilio-webhook-url" type="url" readonly /><button id="voice-copy-twilio-webhook" class="quiet-button" type="button">Copy</button></div>
+              <p id="voice-copy-twilio-status" class="voice-hint" role="status">Set “A call comes in” to this URL using HTTP POST.</p>
+            </div>
+            <p id="voice-twilio-sip" class="voice-hint" hidden></p>
+          </div>
+          <div class="voice-provider">
+            <div class="voice-section-heading"><h3>Telnyx</h3><span id="voice-telnyx-status" class="voice-connection-status">Not connected</span></div>
+            <p id="voice-telnyx-description" class="dashboard-status"></p>
+            <dl id="voice-telnyx-number" class="voice-phone-number" hidden><dt>Phone number</dt><dd></dd></dl>
+            <div id="voice-telnyx-webhook" class="voice-field" hidden>
+              <label for="voice-telnyx-webhook-url">Incoming call webhook</label>
+              <div class="voice-copy-row"><input id="voice-telnyx-webhook-url" type="url" readonly /><button id="voice-copy-telnyx-webhook" class="quiet-button" type="button">Copy</button></div>
+              <p id="voice-copy-telnyx-status" class="voice-hint" role="status">Set this URL as the inbound call webhook in Telnyx.</p>
+            </div>
+            <p id="voice-telnyx-sip" class="voice-hint" hidden></p>
+          </div>
+          <details class="voice-pipeline">
+            <summary>Voice pipeline</summary>
+            <dl><div><dt>Speech recognition</dt><dd>Deepgram Flux</dd></div><div><dt>Conversation</dt><dd id="voice-model-label">Workers AI</dd></div><div><dt>Speech generation</dt><dd>Deepgram Aura-1</dd></div></dl>
+          </details>
+        </section>
+      </div>
+      <noscript><p>Enable JavaScript to configure your receptionist and review calls.</p></noscript>
+    </main>
+    <dialog id="voice-call-dialog" class="voice-call-dialog" aria-labelledby="voice-dialog-title">
+      <div class="voice-dialog-heading"><h2 id="voice-dialog-title">Call transcript</h2><form method="dialog"><button class="quiet-button" aria-label="Close transcript">Close</button></form></div>
+      <p id="voice-dialog-details" class="voice-hint"></p>
+      <p id="voice-dialog-status" class="dashboard-status" role="status"></p>
+      <div id="voice-dialog-transcript" class="voice-transcript"></div>
+      <div class="voice-dialog-actions"><p id="voice-delete-status" class="voice-hint" role="status"></p><button id="voice-delete-call" class="quiet-button voice-delete" type="button" hidden>Delete transcript</button></div>
+    </dialog>
+    <script type="module" src="/src/voice.ts"></script>
+  </body>
+</html>
