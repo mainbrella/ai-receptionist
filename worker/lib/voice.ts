@@ -1,5 +1,6 @@
-import { billingError, checkVoiceBalance, phoneRate, stopUserCalls } from './voice-billing';
 import { z } from 'zod';
+
+export const AGENT_ID = '00000000-0000-4000-8000-000000000001';
 
 export const VOICE_MODELS = {
   stt: '@cf/deepgram/flux',
@@ -28,6 +29,7 @@ export interface VoiceCallRow {
   media_token_expires_at: string | null; connected_at: string | null;
   phone_transport: VoicePhoneTransport | null;
   phone_provider: VoicePhoneProvider | null;
+  deleted_at: string | null;
 }
 export interface VoiceAgentRow {
   id: string; user_id: string; name: string; business_name: string;
@@ -62,9 +64,8 @@ export function twilioSipUri(value: string | null | undefined): string | null {
 }
 export function telephonyConfigured(env: Env, agentId: string | null, transport?: VoicePhoneTransport): boolean {
   if (!voiceEnabled(env) || !publicVoiceOrigin(env) || !env.TWILIO_AUTH_TOKEN ||
-    !/^AC[a-f0-9]{32}$/i.test(env.TWILIO_ACCOUNT_SID || '') || !agentId || env.TWILIO_AGENT_ID !== agentId) return false;
+    !/^AC[a-f0-9]{32}$/i.test(env.TWILIO_ACCOUNT_SID || '') || agentId !== AGENT_ID) return false;
   return (transport ? [transport] : ['pstn','sip'] as const).some(kind => {
-    try { phoneRate(env,kind); } catch { return false; }
     return kind === 'sip' ? Boolean(twilioSipUri(env.TWILIO_SIP_URI)) : /^\+[1-9]\d{7,14}$/.test(env.TWILIO_PHONE_NUMBER || '');
   });
 }
@@ -84,8 +85,6 @@ export async function expireCalls(env: Env, userId: string) {
 }
 export async function createCall(env: Env, userId: string, agent: VoiceAgentConfig, channel: VoiceCallRow['channel'],
   providerCallId: string | null = null, mediaTokenHash: string | null = null, phoneTransport: VoicePhoneTransport = 'pstn', phoneProvider: VoicePhoneProvider = 'twilio'): Promise<VoiceCallRow | null> {
-  try { await checkVoiceBalance(env,userId); }
-  catch (error) { await stopUserCalls(env,userId); throw new Error(billingError(error)); }
   await expireCalls(env, userId);
   const id = crypto.randomUUID();
   const now = new Date().toISOString();

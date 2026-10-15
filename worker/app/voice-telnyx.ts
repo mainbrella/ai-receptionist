@@ -1,4 +1,4 @@
-import { callStub, createCall, hashMediaToken, initializeCall, MAX_CALL_MS, publicAgent, publicVoiceOrigin, readCall, type VoiceAgentRow } from '../lib/voice';
+import { AGENT_ID, callStub, createCall, hashMediaToken, initializeCall, MAX_CALL_MS, publicAgent, publicVoiceOrigin, readCall, type VoiceAgentRow } from '../lib/voice';
 import { twilioToPCM } from '../lib/voice-telephony';
 
 import { pcmToTelnyx, telnyxCallIdMatches, telnyxConfigured, telnyxSipUri, validTelnyxCallId, validTelnyxSignature, streamTexml } from '../lib/voice-telnyx';
@@ -8,7 +8,7 @@ const unavailable = () => xml('<Response><Say>Sorry, our receptionist is unavail
 export async function handleTelnyxRequest(request: Request,env: Env,ctx?: ExecutionContext): Promise<Response> {
   const url = new URL(request.url);
   const origin = publicVoiceOrigin(env);
-  if (!origin || !env.TELNYX_PUBLIC_KEY || !telnyxConfigured(env,env.TELNYX_AGENT_ID || null)) return new Response(null,{status:503});
+  if (!origin || !env.TELNYX_PUBLIC_KEY || !telnyxConfigured(env,AGENT_ID)) return new Response(null,{status:503});
   const incoming = url.pathname.match(/^\/voice\/telnyx\/incoming\/([a-f0-9-]{36})$/i);
   const media = url.pathname.match(/^\/voice\/telnyx\/media\/([a-f0-9-]{36})$/i);
   if (url.search || (!incoming && !media)) return new Response(null,{status:404});
@@ -29,12 +29,12 @@ export async function handleTelnyxRequest(request: Request,env: Env,ctx?: Execut
       const transport=sipTo || to?.toLowerCase().startsWith('sip:') ? 'sip' : 'pstn';
       const destinationMatches=transport === 'sip' ? Boolean(sipTo && sipTo===telnyxSipUri(env.TELNYX_SIP_URI)) : to===env.TELNYX_PHONE_NUMBER;
       if (fields.get('AccountSid')!==env.TELNYX_ACCOUNT_SID || fields.get('ConnectionId')!==env.TELNYX_CONNECTION_ID ||
-        !destinationMatches || incoming[1]!==env.TELNYX_AGENT_ID || !validTelnyxCallId(callSid)) return new Response(null,{status:403});
+        !destinationMatches || incoming[1]!==AGENT_ID || !validTelnyxCallId(callSid)) return new Response(null,{status:403});
       if (!telnyxConfigured(env,incoming[1],transport)) return new Response(null,{status:503});
       const agent=await env.DB.prepare('SELECT * FROM voice_agents WHERE id=?').bind(incoming[1]).first<VoiceAgentRow>();
       if (!agent) return unavailable();
       const existing=await env.DB.prepare('SELECT id FROM voice_calls WHERE provider_call_id=?').bind(callSid).first();
-      // A signed webhook replay cannot allocate another paid model session.
+      // A signed webhook replay cannot allocate another model session.
       if (existing) return xml('<Response><Hangup /></Response>');
       const token=crypto.randomUUID().replaceAll('-','')+crypto.randomUUID().replaceAll('-','');
       const call=await createCall(env,agent.user_id,publicAgent(agent),'phone',callSid,await hashMediaToken(token),transport,'telnyx');
@@ -50,7 +50,7 @@ export async function handleTelnyxRequest(request: Request,env: Env,ctx?: Execut
     if (request.headers.get('Upgrade')?.toLowerCase()!=='websocket') return new Response(null,{status:426});
     if (!await validTelnyxSignature(env.TELNYX_PUBLIC_KEY,request.headers,expectedUrl.replace('https:','wss:'))) return new Response(null,{status:403});
     const call=await readCall(env,media![1]);
-    if (!call || call.channel!=='phone' || call.phone_provider!=='telnyx' || call.status!=='active' || call.connected_at || !call.media_token_hash || call.agent_id!==env.TELNYX_AGENT_ID) return new Response(null,{status:404});
+    if (!call || call.channel!=='phone' || call.phone_provider!=='telnyx' || call.status!=='active' || call.connected_at || !call.media_token_hash || call.agent_id!==AGENT_ID) return new Response(null,{status:404});
     return bridgeTelnyx(env,call.id,call.provider_call_id!,ctx);
   } catch {
     console.error('voice_telephony_unavailable');

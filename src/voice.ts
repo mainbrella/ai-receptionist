@@ -188,7 +188,7 @@ async function load() {
     selectTab(location.hash.slice(1));
   } catch (caught) {
     showError(error, caught, 'Could not load Voice. Please try again.');
-    retry.hidden = false;
+    retry.hidden = caught instanceof VoiceAPIError && caught.status === 401;
   } finally {
     loading.hidden = true;
     main.setAttribute('aria-busy', 'false');

@@ -2,7 +2,7 @@ interface Env {
   DB: D1Database;
   AI: Ai;
   ASSETS: Fetcher;
-  RECEPTIONIST_CALL: DurableObjectNamespace;
+  RECEPTIONIST_CALL: DurableObjectNamespace<import("./durable-objects/receptionist-call").ReceptionistCall>;
   ADMIN_PASSWORD: string;
   VOICE_ENABLED?: string;
   VOICE_PUBLIC_ORIGIN?: string;
