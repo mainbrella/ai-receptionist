@@ -5,6 +5,7 @@ import { build } from "esbuild";
 import { Miniflare, convertV4MiniflareOptions } from "miniflare";
 import { VoiceClient, type VoiceTransport } from "@cloudflare/voice/client";
 import { getExpectedTwilioSignature } from "twilio/lib/webhooks/webhooks.js";
+import { handleTelnyxRequest } from "../worker/app/voice-telnyx";
 
 const ORIGIN = "https://receptionist.example";
 const PASSWORD = "a-long-test-admin-password";
@@ -226,9 +227,58 @@ test("Telnyx verifies the raw signed webhook, timestamp, account and application
   assert.equal((await send(fields, Math.floor(Date.now() / 1000) - 600)).status, 403);
   assert.equal((await send(fields, Math.floor(Date.now() / 1000), true)).status, 403);
   assert.equal((await send({ ...fields, ConnectionId: "999" })).status, 403);
+  assert.equal((await send({ ...fields, AccountSid: "22222222-2222-4222-8222-222222222222" })).status, 403);
   const response = await send(); assert.equal(response.status, 200);
   assert.match(await response.text(), /codec="PCMU"/);
   assert.match(await (await send()).text(), /<Hangup \/>/);
+});
+
+test("Telnyx SID discovery logs only verified mapped identities and never creates a call", async (t) => {
+  const warnings = t.mock.method(console, "warn", () => {});
+  const keys = await crypto.subtle.generateKey({ name: "Ed25519" }, true, ["sign", "verify"]);
+  const publicKey = Buffer.from(await crypto.subtle.exportKey("raw", keys.publicKey)).toString("base64");
+  const account = "11111111-1111-4111-8111-111111111111";
+  const connection = "123456789";
+  let databaseCalls = 0;
+  const env = { VOICE_ENABLED: "true", VOICE_PUBLIC_ORIGIN: ORIGIN, AI: {}, RECEPTIONIST_CALL: {},
+    TELNYX_API_KEY: "fixture-api-key", TELNYX_PUBLIC_KEY: publicKey, TELNYX_ACCOUNT_SID: "",
+    TELNYX_CONNECTION_ID: connection, TELNYX_PHONE_NUMBER: "+15557654321",
+    DB: { prepare() { databaseCalls++; throw new Error("SID discovery must not access call storage"); } },
+  } as unknown as Env;
+  const path = `/voice/telnyx/incoming/${AGENT}`;
+  const fields = { AccountSid: account, ConnectionId: connection, CallSid: "v3:fixture-call", To: "+15557654321" };
+  async function send(values = fields, options: { path?: string; timestamp?: number; signed?: boolean } = {}) {
+    const body = new URLSearchParams(values).toString();
+    const timestamp = options.timestamp ?? Math.floor(Date.now() / 1000);
+    const signature = Buffer.from(await crypto.subtle.sign("Ed25519", keys.privateKey,
+      new TextEncoder().encode(`${timestamp}|${body}`))).toString("base64");
+    return handleTelnyxRequest(new Request(`${ORIGIN}${options.path ?? path}`, { method: "POST", headers: {
+      "Content-Type": "application/x-www-form-urlencoded", "telnyx-timestamp": String(timestamp),
+      ...(options.signed === false ? {} : { "telnyx-signature-ed25519": signature }),
+    }, body }), env);
+  }
+  assert.equal((await send(fields, { signed: false })).status, 403);
+  assert.equal((await send(fields, { timestamp: Math.floor(Date.now() / 1000) - 600 })).status, 403);
+  assert.equal((await send({ ...fields, ConnectionId: "999" })).status, 403);
+  assert.equal((await send({ ...fields, To: "+15550000000" })).status, 403);
+  assert.equal((await send({ ...fields, CallSid: "invalid" })).status, 403);
+  assert.equal((await send(fields, { path: `/voice/telnyx/incoming/${crypto.randomUUID()}` })).status, 403);
+  assert.equal((await send({ ...fields, AccountSid: "untrusted\nlog-injection" })).status, 503);
+  assert.ok(warnings.mock.calls.some((call) => call.arguments[0] === "voice_telnyx_account_sid_missing_or_invalid"));
+  assert.ok(warnings.mock.calls.every((call) => !JSON.stringify(call.arguments).includes(account) && !JSON.stringify(call.arguments).includes("log-injection")));
+  const response = await send();
+  assert.equal(response.status, 503);
+  assert.equal(await response.text(), "");
+  const discovery = warnings.mock.calls.filter((call) => call.arguments[0] === "voice_telnyx_account_sid_required");
+  assert.equal(discovery.length, 1);
+  assert.deepEqual(JSON.parse(discovery[0].arguments[1]), {
+    AccountSid: account, ConnectionId: connection,
+  });
+  assert.equal(databaseCalls, 0);
+  assert.equal(env.TELNYX_ACCOUNT_SID, "");
+  assert.equal((await handleTelnyxRequest(new Request(`${ORIGIN}/voice/telnyx/media/${crypto.randomUUID()}`, {
+    headers: { Upgrade: "websocket" },
+  }), env)).status, 503);
 });
 
 test("failed phone cleanup stays active and non-deletable until the provider hangup retry succeeds", async (t) => {

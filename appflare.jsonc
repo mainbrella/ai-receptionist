@@ -36,7 +36,7 @@
     { "name": "TWILIO_PHONE_NUMBER", "label": "Twilio phone number", "help": "Incoming destination in E.164 format, such as +15551234567.", "optional": true },
     { "name": "TWILIO_SIP_URI", "label": "Twilio SIP address", "help": "Optional alternative to a number: sip:receptionist@your-domain.sip.twilio.com.", "optional": true },
     { "name": "TELNYX_PUBLIC_KEY", "label": "Telnyx public key", "help": "Base64 Ed25519 public key from Keys & Credentials. Required for Telnyx signatures.", "optional": true },
-    { "name": "TELNYX_ACCOUNT_SID", "label": "Telnyx account UUID", "help": "The AccountSid from your TeXML webhook, distinct from the application ID.", "optional": true },
+    { "name": "TELNYX_ACCOUNT_SID", "label": "Telnyx account UUID", "help": "AccountSid from your TeXML webhook, distinct from the application ID. Leave empty during setup to discover it in verified webhook logs.", "optional": true },
     { "name": "TELNYX_CONNECTION_ID", "label": "Telnyx TeXML application ID", "help": "Numeric application / connection ID.", "optional": true },
     { "name": "TELNYX_PHONE_NUMBER", "label": "Telnyx phone number", "help": "Incoming destination in E.164 format.", "optional": true },
     { "name": "TELNYX_SIP_URI", "label": "Telnyx SIP address", "help": "Optional alternative to a number: sip:receptionist@your-app.sip.telnyx.com.", "optional": true }

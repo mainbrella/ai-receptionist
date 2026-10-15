@@ -32,6 +32,18 @@ Configure these Worker values:
 
 In Telnyx, create a TeXML application and set its Voice URL to the Telnyx webhook shown under **Phone connection**, using **POST**. Assign the incoming number to that application. For SIP, configure a SIP subdomain on the same TeXML application and use its displayed destination. The application ID is numeric; the account ID is a UUID. They are different values. The workspace generates the webhook path when a receptionist is saved; no separate agent ID variable is required.
 
+If you cannot find your account UUID in Telnyx's TeXML request debugger, configure the other Telnyx settings and leave `TELNYX_ACCOUNT_SID` empty temporarily. Save your receptionist, copy its Telnyx webhook from **Phone connection**, and set that URL in the TeXML application. Open the installed Worker's logs in the Cloudflare dashboard, or run `npx wrangler tail <installed-worker-name>`, then call your number.
+
+After verifying the signature, application ID, receptionist, destination, and call ID, the Worker logs:
+
+```text
+voice_telnyx_account_sid_required {"AccountSid":"YOUR_ACCOUNT_UUID","ConnectionId":"YOUR_APPLICATION_ID"}
+```
+
+Copy `AccountSid` into the app's `TELNYX_ACCOUNT_SID` setting and save it (or redeploy for a manual installation). Until it is set, the callback returns an empty 503 response, no call is created, and media connections stay disabled. The Worker never saves the discovered account ID automatically.
+
+Diagnostic logs distinguish invalid signatures (`voice_telnyx_webhook_signature_invalid`), a wrong application/receptionist/destination/call ID (`voice_telnyx_webhook_identity_mismatch`), a missing or malformed incoming account ID (`voice_telnyx_account_sid_missing_or_invalid`), a configured account mismatch (`voice_telnyx_webhook_account_mismatch`), and incomplete settings (`voice_telnyx_configuration_incomplete`). Only a verified, matching webhook can log an account UUID; rejected requests are logged without caller data or credentials.
+
 See Telnyx's [TeXML setup](https://developers.telnyx.com/docs/voice/programmable-voice/texml-setup), [TeXML application settings](https://developers.telnyx.com/api-reference/texml-applications/creates-a-texml-application), and [media streaming](https://developers.telnyx.com/docs/voice/programmable-voice/media-streaming) documentation for provider-side setup.
 
 ## Callback and call behavior
