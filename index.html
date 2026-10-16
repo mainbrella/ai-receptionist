@@ -33,6 +33,7 @@
           <button id="tab-agent" type="button" role="tab" aria-selected="true" aria-controls="panel-agent">Receptionist</button>
           <button id="tab-calls" type="button" role="tab" aria-selected="false" aria-controls="panel-calls" tabindex="-1">Call history</button>
           <button id="tab-phone" type="button" role="tab" aria-selected="false" aria-controls="panel-phone" tabindex="-1">Phone connection</button>
+          <button id="tab-numbers" type="button" role="tab" aria-selected="false" aria-controls="panel-numbers" tabindex="-1">Search numbers</button>
         </div>
         <section id="panel-agent" role="tabpanel" aria-labelledby="tab-agent">
           <div class="voice-workspace">
@@ -50,10 +51,33 @@
                     <input id="voice-business" name="businessName" maxlength="120" required placeholder="Your business" autocomplete="organization" />
                   </div>
                 </div>
+                <div class="voice-field-pair">
+                  <div class="voice-field">
+                    <label for="voice-model">Voice model</label>
+                    <select id="voice-model" name="model" aria-describedby="voice-language-hint">
+                      <option value="aura-1">Aura-1</option>
+                    </select>
+                  </div>
+                  <div class="voice-field">
+                    <label for="voice-language">Language</label>
+                    <select id="voice-language" name="language" aria-describedby="voice-language-hint">
+                      <option value="en">English</option>
+                    </select>
+                  </div>
+                </div>
+                <div class="voice-field voice-voice-field">
+                  <label for="voice-speaker">Voice</label>
+                  <select id="voice-speaker" name="voice">
+                    <option value="asteria">Asteria</option>
+                    <option value="luna">Luna</option>
+                    <option value="athena">Athena</option>
+                  </select>
+                  <p id="voice-language-hint" class="voice-hint" role="status"></p>
+                </div>
                 <div class="voice-field">
                   <label for="voice-greeting">Greeting</label>
                   <textarea id="voice-greeting" name="greeting" rows="3" maxlength="500" required aria-describedby="voice-greeting-hint">Hi, you’re speaking with our AI receptionist. How can I help?</textarea>
-                  <p id="voice-greeting-hint" class="voice-hint">The first thing callers hear. Let them know they’re speaking with AI.</p>
+                  <p id="voice-greeting-hint" class="voice-hint">Write this in the selected language. Let callers know they’re speaking with AI.</p>
                 </div>
                 <div class="voice-field">
                   <label for="voice-instructions">Instructions &amp; business information</label>
@@ -64,13 +88,13 @@ Answer using only the business information provided here. If you don’t know th
 Never invent opening hours, prices, availability, or account information. Do not claim to book appointments or transfer calls.</textarea>
                   <p id="voice-instructions-hint" class="voice-hint">Add your hours, services, and FAQs. Scheduling, account lookups, and human transfers aren’t connected yet.</p>
                 </div>
-                <div class="voice-field voice-voice-field">
-                  <label for="voice-speaker">Voice</label>
-                  <select id="voice-speaker" name="voice">
-                    <option value="asteria">Asteria · English</option>
-                    <option value="luna">Luna · English</option>
-                    <option value="athena">Athena · English</option>
+                <div class="voice-field voice-logic-field">
+                  <label for="voice-logic">Voice logic</label>
+                  <select id="voice-logic" name="voiceLogic" aria-describedby="voice-logic-hint">
+                    <option value="original_no_reply">Standard (default)</option>
+                    <option value="reply_right_away">Reply right away (experimental)</option>
                   </select>
+                  <p id="voice-logic-hint" class="voice-hint">Reply right away varies short acknowledgments when the caller finishes, then gives the normal reply.</p>
                 </div>
                 <div class="voice-save-row">
                   <button id="voice-save" class="button" type="submit">Save receptionist</button>
@@ -132,6 +156,54 @@ Never invent opening hours, prices, availability, or account information. Do not
             </table>
           </div>
         </section>
+        <section id="panel-numbers" class="voice-number-search-panel" role="tabpanel" aria-labelledby="tab-numbers" hidden>
+          <h2>Search numbers</h2>
+          <form id="voice-number-search" class="voice-number-search">
+            <div class="voice-number-search-row">
+              <div class="voice-field">
+                <label for="voice-number-query">Word or digits <span class="voice-optional">optional</span></label>
+                <input id="voice-number-query" name="query" type="text" maxlength="32" pattern="[A-Za-z0-9 \(\)\-]*" placeholder="FLOWERS or 1010" autocomplete="off" spellcheck="false" aria-describedby="voice-number-preview" />
+              </div>
+              <div class="voice-field">
+                <label for="voice-number-area">Area code <span class="voice-optional">optional</span></label>
+                <input id="voice-number-area" name="areaCode" type="text" inputmode="numeric" pattern="[2-9][0-9]{2}" maxlength="3" placeholder="Any" autocomplete="off" />
+              </div>
+              <button id="voice-number-submit" class="button" type="submit">Search numbers</button>
+            </div>
+            <p id="voice-number-preview" class="voice-hint" role="status">Try a word like FLOWERS, or digits like 1010.</p>
+            <details class="voice-number-filters">
+              <summary>More filters</summary>
+              <div class="voice-number-filter-grid">
+                <div class="voice-field">
+                  <label for="voice-number-country">Country</label>
+                  <select id="voice-number-country" name="country"><option value="US">United States</option><option value="CA">Canada</option></select>
+                </div>
+                <div class="voice-field">
+                  <label for="voice-number-type">Number type</label>
+                  <select id="voice-number-type" name="type"><option value="local">Local</option><option value="toll-free">Toll-free</option></select>
+                </div>
+                <div class="voice-field">
+                  <label for="voice-number-match">Word / digit position</label>
+                  <select id="voice-number-match" name="match"><option value="ends_with">Ends with</option><option value="contains">Contains</option><option value="starts_with">Starts with</option></select>
+                </div>
+                <div class="voice-field">
+                  <label for="voice-number-locality">City <span class="voice-optional">optional</span></label>
+                  <input id="voice-number-locality" name="locality" type="text" maxlength="64" placeholder="Any city" autocomplete="off" />
+                </div>
+                <div class="voice-field">
+                  <label for="voice-number-region">State / province <span class="voice-optional">optional</span></label>
+                  <input id="voice-number-region" name="region" type="text" maxlength="2" pattern="[A-Za-z]{2}" placeholder="CA or ON" autocomplete="off" />
+                </div>
+              </div>
+              <label class="voice-number-similar" for="voice-number-similar"><input id="voice-number-similar" name="includeSimilar" type="checkbox" />Include similar results when an exact match is unavailable</label>
+            </details>
+          </form>
+          <p id="voice-number-error" class="dashboard-error" role="alert" hidden></p>
+          <p id="voice-number-status" class="voice-number-status voice-hint" role="status" aria-live="polite"></p>
+          <ul id="voice-number-results" class="voice-number-results" aria-label="Available voice numbers" aria-busy="false" hidden></ul>
+          <p id="voice-number-copy-status" class="voice-hint" role="status" aria-live="polite"></p>
+          <p class="voice-hint voice-number-footnote">Search only; numbers are not reserved. Provider prices cover number rental and setup, with calling usage extra.</p>
+        </section>
         <section id="panel-phone" class="voice-phone" role="tabpanel" aria-labelledby="tab-phone" hidden>
           <h2>Phone connections</h2>
           <p class="dashboard-status">Configure provider credentials in Appflare settings or <code>.dev.vars</code>. Credentials are never entered here.</p>
@@ -159,7 +231,7 @@ Never invent opening hours, prices, availability, or account information. Do not
           </div>
           <details class="voice-pipeline">
             <summary>Voice pipeline</summary>
-            <dl><div><dt>Speech recognition</dt><dd>Deepgram Flux</dd></div><div><dt>Conversation</dt><dd id="voice-model-label">Workers AI</dd></div><div><dt>Speech generation</dt><dd>Deepgram Aura-1</dd></div></dl>
+            <dl><div><dt>Speech recognition</dt><dd id="voice-stt-label">Deepgram Flux</dd></div><div><dt>Conversation</dt><dd id="voice-model-label">Workers AI</dd></div><div><dt>Speech generation</dt><dd id="voice-tts-label">Deepgram Aura-1</dd></div></dl>
           </details>
         </section>
       </div>

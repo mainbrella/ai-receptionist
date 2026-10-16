@@ -1,6 +1,6 @@
 import test, { type TestContext } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { build } from "esbuild";
 import { Miniflare, convertV4MiniflareOptions } from "miniflare";
 import { VoiceClient, type VoiceTransport } from "@cloudflare/voice/client";
@@ -32,9 +32,11 @@ async function runtime(t: TestContext, overrides: Record<string, string> = {}) {
   }] }));
   t.after(() => mf.dispose());
   const db = await mf.getD1Database("DB");
-  const migration = readFileSync(new URL("../migrations/0001_receptionist.sql", import.meta.url), "utf8");
-  for (const statement of migration.replace(/^--.*$/gm, "").split(";").map((s) => s.trim()).filter(Boolean)) {
-    await db.prepare(statement).run();
+  const migrationDirectory = new URL("../migrations/", import.meta.url);
+  for (const filename of readdirSync(migrationDirectory).filter((name) => name.endsWith(".sql")).sort()) {
+    const migration = readFileSync(new URL(filename, migrationDirectory), "utf8");
+    const statements = migration.replace(/^--.*$/gm, "").split(";").map((statement) => statement.trim()).filter(Boolean);
+    await db.batch(statements.map((statement) => db.prepare(statement)));
   }
   let cookie = "";
   const request = (path: string, method = "GET", body?: unknown, headers: Record<string, string> = {}) => mf.dispatchFetch(`${ORIGIN}${path}`, {
@@ -47,14 +49,16 @@ async function runtime(t: TestContext, overrides: Record<string, string> = {}) {
     cookie = response.headers.get("set-cookie")!.split(";")[0];
     return cookie;
   };
-  const save = async () => {
-    const response = await request("/voice/agent", "PUT", agent);
+  const save = async (config: Record<string, unknown> = {}) => {
+    const response = await request("/voice/agent", "PUT", { ...agent, ...config });
     assert.equal(response.status, 200, await response.clone().text());
   };
-  const create = async (channel = "text") => {
+  const create = async (channel = "text", legacyBackchannel = false) => {
     const response = await request("/voice/calls", "POST", { channel });
     assert.equal(response.status, 201, await response.clone().text());
-    return response.json() as Promise<{ call: { id: string }; websocketUrl: string }>;
+    const created = await response.json() as { call: { id: string }; websocketUrl: string };
+    if (legacyBackchannel) assert.equal((await request(`/__test_legacy_backchannel/${created.call.id}`, "POST")).status, 204);
+    return created;
   };
   return { mf, db, request, login, save, create, get cookie() { return cookie; } };
 }
@@ -150,8 +154,120 @@ test("browser call streams PCM through the real voice pipeline and bounds arbitr
   await until(() => frames.some((frame) => typeof frame !== "string"), "Greeting PCM missing");
   socket.send(new ArrayBuffer(640));
   await until(async () => (await f.db.prepare("SELECT transcript_json FROM voice_calls WHERE id=?").bind(created.call.id).first<{ transcript_json: string }>())?.transcript_json.includes("Could I leave a message?") ?? false, "STT turn missing");
+  await until(async () => (await f.db.prepare("SELECT transcript_json FROM voice_calls WHERE id=?").bind(created.call.id).first<{ transcript_json: string }>())?.transcript_json.includes("I can take a message: Could I leave a message?") ?? false, "Fast spoken reply missing");
+  const transcript = await f.db.prepare("SELECT transcript_json FROM voice_calls WHERE id=?").bind(created.call.id).first<{ transcript_json: string }>();
+  assert.doesNotMatch(transcript!.transcript_json, /Mm-hmm\.|One moment\./);
   socket.send(JSON.stringify({ type: "cf_agent_state", state: { closed: false } }));
   await until(async () => (await f.db.prepare("SELECT status FROM voice_calls WHERE id=?").bind(created.call.id).first())?.status === "failed", "Unauthorized SDK traffic accepted");
+});
+
+test("legacy call snapshots retain two short fillers before a slow final answer", async (t) => {
+  const f = await runtime(t); await f.login(); await f.save();
+  const created = await f.create("browser", true);
+  const response = await f.request(new URL(created.websocketUrl).pathname, "GET", undefined, { Upgrade: "websocket" });
+  assert.equal(response.status, 101);
+  const socket = response.webSocket!;
+  const times: number[] = [];
+  socket.addEventListener("message", (event) => { if (typeof event.data !== "string") times.push(Date.now()); });
+  socket.accept();
+  socket.send(JSON.stringify({ type: "start_call" }));
+  await until(() => times.length > 0, "Greeting PCM missing");
+  const initialAudio = times.length;
+  const started = Date.now();
+  socket.send(JSON.stringify({ type: "text_message", text: "waiting model" }));
+  await until(() => times.length >= initialAudio + 3, "Filler and final reply PCM missing", 10_000);
+  assert.ok(times[initialAudio] - started < 1000, "acknowledgment was not immediate");
+  assert.ok(times[initialAudio + 1] - started >= 4500, "holding phrase arrived too early");
+  assert.ok(times[initialAudio + 2] - started >= 6000, "final answer arrived too early");
+  await until(async () => (await f.db.prepare("SELECT transcript_json FROM voice_calls WHERE id=?").bind(created.call.id).first<{ transcript_json: string }>())?.transcript_json.includes("I can take a message: waiting model") ?? false, "Final voice transcript missing");
+  const stored = await f.db.prepare("SELECT transcript_json FROM voice_calls WHERE id=?").bind(created.call.id).first<{ transcript_json: string }>();
+  assert.match(stored!.transcript_json, /Mm-hmm\./);
+  assert.match(stored!.transcript_json, /One moment\./);
+  assert.match(stored!.transcript_json, /I can take a message: waiting model/);
+});
+
+test("voice TTS requests stay serial across a multi-sentence reply", async (t) => {
+  const f = await runtime(t); await f.login(); await f.save();
+  const created = await f.create("browser", true);
+  const response = await f.request(new URL(created.websocketUrl).pathname, "GET", undefined, { Upgrade: "websocket" });
+  assert.equal(response.status, 101);
+  const socket = response.webSocket!;
+  const frames: (string | ArrayBuffer)[] = [];
+  socket.addEventListener("message", (event) => frames.push(event.data));
+  socket.accept();
+  socket.send(JSON.stringify({ type: "start_call" }));
+  await until(() => frames.some((frame) => typeof frame !== "string"), "Greeting PCM missing");
+  await until(async () => ((await (await f.request("/__test_tts_stats")).json()) as { active: number }).active === 0, "Greeting TTS still active");
+  await f.request("/__test_tts_stats", "POST");
+  socket.send(JSON.stringify({ type: "text_message", text: "multi sentence" }));
+  await until(async () => (await f.db.prepare("SELECT transcript_json FROM voice_calls WHERE id=?").bind(created.call.id).first<{ transcript_json: string }>())?.transcript_json.includes("Third sentence.") ?? false, "Multi-sentence answer missing");
+  await until(async () => {
+    const stats = await (await f.request("/__test_tts_stats")).json() as { active: number; requests: number };
+    return stats.active === 0 && stats.requests >= 3;
+  }, "Sentence audio did not finish", 5000);
+  const stats = await (await f.request("/__test_tts_stats")).json() as { maxActive: number; requests: number };
+  assert.ok(stats.requests >= 3, "reply did not synthesize each sentence");
+  assert.equal(stats.maxActive, 1, "TTS provider requests overlapped");
+});
+
+test("text calls return slow model replies without voice fillers", async (t) => {
+  const f = await runtime(t); await f.login(); await f.save();
+  const created = await f.create("text");
+  const response = await f.request(new URL(created.websocketUrl).pathname, "GET", undefined, { Upgrade: "websocket" });
+  assert.equal(response.status, 101);
+  const socket = response.webSocket!;
+  const frames: string[] = [];
+  socket.addEventListener("message", (event) => { if (typeof event.data === "string") frames.push(event.data); });
+  socket.accept();
+  await until(() => frames.some((frame) => frame.includes("Hello, how can I help?")), "Text greeting missing");
+  socket.send(JSON.stringify({ type: "text_message", text: "waiting model" }));
+  await until(() => frames.some((frame) => frame.includes("I can take a message: waiting model")), "Text reply missing", 8000);
+  assert.equal(frames.some((frame) => /Mm-hmm\.|One moment\./.test(frame)), false);
+  const stored = await f.db.prepare("SELECT transcript_json FROM voice_calls WHERE id=?").bind(created.call.id).first<{ transcript_json: string }>();
+  assert.doesNotMatch(stored!.transcript_json, /Mm-hmm\.|One moment\./);
+});
+
+test("a failed optional holding phrase does not end the call", async (t) => {
+  const f = await runtime(t); await f.login(); await f.save();
+  const created = await f.create("browser", true);
+  const response = await f.request(new URL(created.websocketUrl).pathname, "GET", undefined, { Upgrade: "websocket" });
+  assert.equal(response.status, 101);
+  const socket = response.webSocket!;
+  const frames: (string | ArrayBuffer)[] = [];
+  socket.addEventListener("message", (event) => frames.push(event.data));
+  socket.accept();
+  socket.send(JSON.stringify({ type: "start_call" }));
+  await until(() => frames.some((frame) => typeof frame !== "string"), "Greeting PCM missing");
+  socket.send(JSON.stringify({ type: "text_message", text: "filler outage" }));
+  await until(() => frames.filter((frame) => typeof frame !== "string").length >= 2, "Acknowledgment PCM missing");
+  await until(async () => (await f.db.prepare("SELECT transcript_json FROM voice_calls WHERE id=?").bind(created.call.id).first<{ transcript_json: string }>())?.transcript_json.includes("I can take a message: filler outage") ?? false, "Final response missing", 10_000);
+  assert.equal(frames.some((frame) => typeof frame === "string" && frame.includes('"error"')), false);
+  assert.equal((await f.db.prepare("SELECT status FROM voice_calls WHERE id=?").bind(created.call.id).first<{ status: string }>())?.status, "active");
+});
+
+test("interrupting a delayed voice turn prevents its fillers and late answer", async (t) => {
+  const f = await runtime(t); await f.login(); await f.save();
+  const created = await f.create("browser", true);
+  const response = await f.request(new URL(created.websocketUrl).pathname, "GET", undefined, { Upgrade: "websocket" });
+  assert.equal(response.status, 101);
+  const socket = response.webSocket!;
+  const frames: (string | ArrayBuffer)[] = [];
+  socket.addEventListener("message", (event) => frames.push(event.data));
+  socket.accept();
+  socket.send(JSON.stringify({ type: "start_call" }));
+  await until(() => frames.some((frame) => typeof frame !== "string"), "Greeting PCM missing");
+  socket.send(JSON.stringify({ type: "text_message", text: "waiting model" }));
+  await until(() => frames.filter((frame) => typeof frame !== "string").length >= 2, "Acknowledgment PCM missing");
+  const interruptedAt = Date.now();
+  socket.send(JSON.stringify({ type: "interrupt" }));
+  await until(() => frames.some((frame) => typeof frame === "string" && frame.includes('"listening"')), "Interrupt did not return to listening");
+  await new Promise((resolve) => setTimeout(resolve, Math.max(0, interruptedAt + 800 - Date.now())));
+  socket.send(JSON.stringify({ type: "text_message", text: "quick question" }));
+  await until(() => frames.some((frame) => typeof frame === "string" && frame.includes("I can take a message: quick question")), "Follow-up reply missing");
+  await new Promise((resolve) => setTimeout(resolve, Math.max(0, interruptedAt + 7000 - Date.now())));
+  const stored = await f.db.prepare("SELECT transcript_json FROM voice_calls WHERE id=?").bind(created.call.id).first<{ transcript_json: string }>();
+  assert.match(stored!.transcript_json, /I can take a message: quick question/);
+  assert.doesNotMatch(stored!.transcript_json, /One moment\.|I can take a message: waiting model/);
 });
 
 test("call limits are atomic across concurrent starts and deleted calls still count toward the daily limit", async (t) => {
@@ -352,4 +468,207 @@ test("retention redacts old transcripts and instructions while preserving webhoo
   assert.equal((await f.request(`/voice/calls/${created.call.id}`)).status, 404);
   const row = await f.db.prepare("SELECT transcript_json,config_json,provider_call_id FROM voice_calls WHERE id=?").bind(created.call.id).first();
   assert.deepEqual(row, { transcript_json: "[]", config_json: "{}", provider_call_id: SID });
+});
+
+async function spokenCall(t: TestContext, f: Awaited<ReturnType<typeof runtime>>) {
+  const created = await f.create("browser");
+  const response = await f.request(new URL(created.websocketUrl).pathname, "GET", undefined, { Upgrade: "websocket" });
+  assert.equal(response.status, 101);
+  const socket = response.webSocket!;
+  const audio: number[] = [];
+  const messages: Array<{ type: string; text?: string; status?: string }> = [];
+  socket.addEventListener("message", (event) => {
+    if (typeof event.data === "string") messages.push(JSON.parse(event.data));
+    else audio.push(new Int16Array(event.data)[0]);
+  });
+  socket.accept();
+  t.after(() => { try { socket.close(); } catch { /* Already closed. */ } });
+  socket.send(JSON.stringify({ type: "start_call" }));
+  await until(() => audio.length === 1, "Greeting missing");
+  return { socket, audio, messages, id: created.call.id };
+}
+
+test("voice settings validate selections, persist, and freeze each call's speech configuration", async (t) => {
+  const f = await runtime(t); await f.login(); await f.save();
+  const initial = await (await f.request("/voice/agent")).json() as { agent: Record<string, unknown> };
+  assert.equal(initial.agent.voiceLogic, "original_no_reply");
+  assert.equal(initial.agent.model, "aura-1");
+  assert.equal(initial.agent.language, "en");
+  for (const selection of [
+    { voiceLogic: "unknown" }, { model: "unknown" }, { language: "unknown" },
+    { model: "aura-1", language: "es", voice: "celeste" },
+    { model: "aura-2", language: "es", voice: "asteria" },
+  ]) assert.equal((await f.request("/voice/agent", "PUT", { ...agent, ...selection })).status, 400);
+  assert.equal((await f.request("/voice/agent", "PUT", { ...agent, model: "sonic-3.6", voice: "db6b0ed5-d5d3-463d-ae85-518a07d3c2b4" })).status, 503);
+  await f.save({ model: "aura-2", language: "es", voice: "celeste", voiceLogic: "reply_right_away" });
+  const created = await f.create();
+  await f.save();
+  const frozen = await f.db.prepare("SELECT config_json FROM voice_calls WHERE id=?").bind(created.call.id).first<{ config_json: string }>();
+  const config = JSON.parse(frozen!.config_json);
+  assert.equal(config.model, "aura-2");
+  assert.equal(config.language, "es");
+  assert.equal(config.voice, "celeste");
+  assert.equal(config.voiceLogic, "reply_right_away");
+  const advertised = await (await f.request("/voice/config")).json() as { speech: { models: Array<{ id: string; available: boolean }> } };
+  assert.deepEqual(advertised.speech.models.map(({ id, available }) => [id, available]), [
+    ["aura-1", true], ["aura-2", true], ["aura-2-gateway", false], ["sonic-3.6", false],
+  ]);
+});
+
+test("original_no_reply waits for the full answer without optional speech", async (t) => {
+  const f = await runtime(t, { TEST_REPLY_DELAY_MS: "350" }); await f.login(); await f.save();
+  const call = await spokenCall(t, f);
+  call.socket.send(new ArrayBuffer(640));
+  await until(async () => (await (await f.request("/__test_inference")).json() as Array<{ model: string }>).some(({ model }) => model.includes("/llama-")), "Reply inference missing");
+  assert.deepEqual(call.audio, [0]);
+  await until(() => call.audio.length === 2, "Full answer missing");
+  const stats = await (await f.request("/__test_tts_stats")).json() as { requests: number };
+  assert.equal(stats.requests, 2, "Original mode should only synthesize its greeting and answer");
+});
+
+test("reply_right_away rotates cached cues before whole replies without adding them to history", async (t) => {
+  const f = await runtime(t, { TEST_REPLY_DELAY_MS: "150" }); await f.login(); await f.save({ voiceLogic: "reply_right_away" });
+  const call = await spokenCall(t, f);
+  assert.deepEqual(call.audio, [0], "Cue preparation must be silent");
+  for (let turn = 0; turn < 4; turn++) {
+    call.socket.send(JSON.stringify({ type: "text_message", text: "multi sentence" }));
+    await until(() => call.audio.length >= 2 + turn * 2, "Immediate cue missing", 500);
+    assert.equal(call.audio[1 + turn * 2], 1000 + turn % 3 * 2000);
+    await until(() => call.audio.length === 3 + turn * 2, "Whole answer missing");
+    await until(async () => {
+      const stored = await f.db.prepare("SELECT transcript_json FROM voice_calls WHERE id=?").bind(call.id).first<{ transcript_json: string }>();
+      return JSON.parse(stored!.transcript_json).length === 3 + turn * 2;
+    }, "Saved answer missing");
+  }
+  assert.deepEqual(call.audio, [0, 1000, 2000, 3000, 2000, 5000, 2000, 1000, 2000]);
+  const stored = await f.db.prepare("SELECT transcript_json,status FROM voice_calls WHERE id=?").bind(call.id).first<{ transcript_json: string; status: string }>();
+  assert.equal(stored!.status, "active");
+  assert.doesNotMatch(stored!.transcript_json, /One second please|Got it, just a sec|I see, let me think/);
+  const stats = await (await f.request("/__test_tts_stats")).json() as { requests: number; maxActive: number };
+  assert.equal(stats.requests, 8, "Prepare three clips once, one greeting, and one complete TTS request per reply");
+  assert.equal(stats.maxActive, 1);
+  assert.equal(call.messages.some(({ type }) => type === "error"), false);
+});
+
+for (const failure of ["provider", "odd_pcm", "empty_pcm"]) {
+  test(`reply_right_away tolerates ${failure} optional clip failures without retrying or ending the call`, async (t) => {
+    const f = await runtime(t, { TEST_CUE_FAILURE: failure }); await f.login(); await f.save({ voiceLogic: "reply_right_away" });
+    const call = await spokenCall(t, f);
+    for (let turn = 0; turn < 2; turn++) {
+      call.socket.send(JSON.stringify({ type: "text_message", text: `Question ${turn}` }));
+      await until(() => call.audio.length === turn + 2, "Answer missing after optional clip failure");
+    }
+    assert.deepEqual(call.audio, [0, 2000, 2000]);
+    const stats = await (await f.request("/__test_tts_stats")).json() as { requests: number };
+    assert.equal(stats.requests, 4, "Failed preparation must never retry during turns");
+    assert.equal(call.messages.some(({ type }) => type === "error"), false);
+    const state = await (await f.request(`/__test_state/${call.id}`)).json() as { closed: boolean };
+    assert.equal(state.closed, false);
+  });
+}
+
+test("reply_right_away keeps cached clips prepared before an optional failure", async (t) => {
+  const f = await runtime(t, { TEST_CUE_FAILURE: "provider", TEST_CUE_FAILURE_TEXT: "Got it, just a sec." });
+  await f.login(); await f.save({ voiceLogic: "reply_right_away" });
+  const call = await spokenCall(t, f);
+  for (let turn = 0; turn < 2; turn++) {
+    call.socket.send(JSON.stringify({ type: "text_message", text: `Question ${turn}` }));
+    await until(() => call.audio.length === 3 + turn * 2, "Answer missing after partial preparation");
+  }
+  assert.deepEqual(call.audio, [0, 1000, 2000, 1000, 2000]);
+  const stats = await (await f.request("/__test_tts_stats")).json() as { requests: number };
+  assert.equal(stats.requests, 5);
+});
+
+test("reply_right_away interruption accepts a rapid correction and suppresses stale and post-hangup audio", async (t) => {
+  const f = await runtime(t, { TEST_MULTI_TURN: "true", TEST_REPLY_DELAY_MS: "350" });
+  await f.login(); await f.save({ voiceLogic: "reply_right_away" });
+  const call = await spokenCall(t, f);
+  call.socket.send(new ArrayBuffer(640));
+  await until(() => call.audio.length === 2, "First cue missing");
+  call.socket.send(new ArrayBuffer(640));
+  await until(() => call.audio.length === 3, "Rapid correction cue missing");
+  assert.ok(call.messages.some(({ type }) => type === "playback_interrupt"));
+  await until(() => call.audio.length === 4, "Replacement answer missing");
+  assert.deepEqual(call.audio, [0, 1000, 3000, 2000]);
+  const replies = call.messages.filter(({ type }) => type === "transcript_end").map(({ text }) => text);
+  assert.ok(!replies.includes("I can take a message: Could I leave a message?"));
+  assert.ok(replies.includes("I can take a message: Could I change that message?"));
+  call.socket.send(new ArrayBuffer(640));
+  await until(() => call.audio.length === 5, "Third cue missing");
+  assert.equal((await f.request(`/voice/calls/${call.id}/end`, "POST", {})).status, 200);
+  await new Promise((resolve) => setTimeout(resolve, 500));
+  assert.deepEqual(call.audio, [0, 1000, 3000, 2000, 5000]);
+  assert.equal(call.messages.some(({ type }) => type === "error"), false);
+});
+
+test("reply_right_away text calls do not prepare or play speech", async (t) => {
+  const f = await runtime(t); await f.login(); await f.save({ voiceLogic: "reply_right_away" });
+  const created = await f.create("text");
+  const { transport } = clientTransport(f, created.websocketUrl);
+  const client = new VoiceClient({ agent: "ReceptionistCall", transport });
+  t.after(() => client.disconnect()); client.connect();
+  await until(() => client.transcript.length === 1, "Text greeting missing");
+  client.sendText("Please take a message.");
+  await until(() => client.transcript.length === 3, "Text reply missing");
+  const stats = await (await f.request("/__test_tts_stats")).json() as { requests: number };
+  assert.equal(stats.requests, 0);
+  assert.equal(client.error, null);
+});
+
+test("all ten languages complete spoken turns through their selected speech and reply models", async (t) => {
+  const f = await runtime(t, { VOICE_AI_GATEWAY_ACCOUNT_ID: "a".repeat(32), VOICE_AI_GATEWAY_ID: "voice", CARTESIA_API_KEY: "test" });
+  await f.login();
+  for (const language of ["en", "es", "fr", "de", "hi", "ru", "pt", "ja", "it", "nl"]) {
+    await f.save({ model: "sonic-3.6", language, voice: "db6b0ed5-d5d3-463d-ae85-518a07d3c2b4" });
+    await f.request("/__test_inference", "POST");
+    const call = await spokenCall(t, f);
+    call.socket.send(new ArrayBuffer(640));
+    await until(() => call.audio.length === 2, `${language} speech reply missing`);
+    const requests = await (await f.request("/__test_inference")).json() as Array<{ model: string; input: Record<string, unknown> }>;
+    assert.deepEqual(new Set(requests.map(({ model }) => model)), new Set([
+      "cartesia/sonic-3.6", language === "en" ? "@cf/deepgram/flux" : "@cf/deepgram/nova-3",
+      language === "en" ? "@cf/meta/llama-3.3-70b-instruct-fp8-fast" : "@cf/google/gemma-4-26b-a4b-it",
+    ]), language);
+    assert.equal(requests.filter(({ model }) => model === "cartesia/sonic-3.6").every(({ input }) => input.language === language), true);
+    if (language !== "en") {
+      assert.equal(requests.find(({ model }) => model.includes("/nova-3"))!.input.language, language);
+      assert.deepEqual(requests.find(({ model }) => model.includes("/gemma-4"))!.input.chat_template_kwargs, { enable_thinking: false });
+    }
+    assert.equal((await f.request(`/voice/calls/${call.id}/end`, "POST", {})).status, 200);
+  }
+});
+
+test("native Spanish and gateway French use localized prepared cues and keep speech selections", async (t) => {
+  const f = await runtime(t, { VOICE_AI_GATEWAY_ACCOUNT_ID: "a".repeat(32), VOICE_AI_GATEWAY_ID: "voice", DEEPGRAM_API_KEY: "test" });
+  await f.login();
+  for (const selection of [
+    { model: "aura-2", language: "es", voice: "celeste", cue: "Un momento, por favor." },
+    { model: "aura-2-gateway", language: "fr", voice: "agathe", cue: "Un instant, s’il vous plaît." },
+  ]) {
+    const { cue, ...config } = selection;
+    await f.save({ ...config, voiceLogic: "reply_right_away" });
+    await f.request("/__test_inference", "POST");
+    const call = await spokenCall(t, f);
+    call.socket.send(new ArrayBuffer(640));
+    await until(() => call.audio.length === 3, `${selection.language} cue or reply missing`);
+    const requests = await (await f.request("/__test_inference")).json() as Array<{ model: string; input: Record<string, unknown> }>;
+    const speech = requests.filter(({ model }) => model.includes("aura-2"));
+    assert.equal(speech.length, 5);
+    assert.equal(speech[0].input.text, cue);
+    assert.equal((await f.request(`/voice/calls/${call.id}/end`, "POST", {})).status, 200);
+  }
+});
+
+test("Nova speech-start interrupts pending non-English replies without client VAD", async (t) => {
+  const f = await runtime(t, { TEST_MULTI_TURN: "true", TEST_NOVA_SPEECH_START_ONLY: "true", TEST_REPLY_DELAY_MS: "350" });
+  await f.login(); await f.save({ model: "aura-2", language: "es", voice: "celeste" });
+  const call = await spokenCall(t, f);
+  call.socket.send(new ArrayBuffer(640));
+  await until(async () => (await (await f.request("/__test_inference")).json() as Array<{ model: string }>).some(({ model }) => model.includes("/gemma-4")), "Spanish inference missing");
+  const interruptions = call.messages.filter(({ type }) => type === "playback_interrupt").length;
+  call.socket.send(new ArrayBuffer(640));
+  await until(() => call.messages.filter(({ type }) => type === "playback_interrupt").length > interruptions, "Provider VAD did not interrupt reply");
+  await new Promise((resolve) => setTimeout(resolve, 500));
+  assert.deepEqual(call.audio, [0], "Interrupted reply must not produce speech");
 });

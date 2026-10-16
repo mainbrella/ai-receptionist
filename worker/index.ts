@@ -27,6 +27,7 @@ export async function cleanup(env: Env): Promise<void> {
       WHERE status!='active' AND deleted_at IS NULL AND ended_at<?`).bind(new Date().toISOString(), before),
     env.DB.prepare("DELETE FROM sessions WHERE expires_at<=?").bind(Date.now()),
     env.DB.prepare("DELETE FROM login_attempts WHERE expires_at<=?").bind(Date.now()),
+    env.DB.prepare("DELETE FROM number_search_attempts WHERE expires_at<=?").bind(Date.now()),
   ]);
 }
 

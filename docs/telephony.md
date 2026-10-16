@@ -23,7 +23,7 @@ Configure these Worker values:
 
 | Name | Type | Purpose |
 | --- | --- | --- |
-| `TELNYX_API_KEY` | Secret | v2 API key with access to TeXML calls; used to stop calls and read final duration |
+| `TELNYX_API_KEY` | Secret | v2 API key with access to TeXML calls and number inventory; used to stop calls and search available numbers |
 | `TELNYX_PUBLIC_KEY` | Variable | Base64 Ed25519 public key used to verify Telnyx signatures |
 | `TELNYX_ACCOUNT_SID` | Variable | Telnyx account UUID used as `AccountSid` in TeXML requests |
 | `TELNYX_CONNECTION_ID` | Variable | Numeric TeXML application/connection ID |
@@ -45,6 +45,12 @@ Copy `AccountSid` into the app's `TELNYX_ACCOUNT_SID` setting and save it (or re
 Diagnostic logs distinguish invalid signatures (`voice_telnyx_webhook_signature_invalid`), a wrong application/receptionist/destination/call ID (`voice_telnyx_webhook_identity_mismatch`), a missing or malformed incoming account ID (`voice_telnyx_account_sid_missing_or_invalid`), a configured account mismatch (`voice_telnyx_webhook_account_mismatch`), and incomplete settings (`voice_telnyx_configuration_incomplete`). Only a verified, matching webhook can log an account UUID; rejected requests are logged without caller data or credentials.
 
 See Telnyx's [TeXML setup](https://developers.telnyx.com/docs/voice/programmable-voice/texml-setup), [TeXML application settings](https://developers.telnyx.com/api-reference/texml-applications/creates-a-texml-application), and [media streaming](https://developers.telnyx.com/docs/voice/programmable-voice/media-streaming) documentation for provider-side setup.
+
+## Number search
+
+The **Search numbers** tab searches Telnyx inventory for voice-capable US and Canadian numbers. Search by digits or a word, optionally with an area code, location, region, or toll-free filter. Word searches use the phone keypad; similar results are opt-in and appear after exact matches. Prices are provider estimates.
+
+Search requires only `TELNYX_API_KEY` and an authenticated admin session. It works before saving a receptionist or configuring incoming calls. Searches are limited to 20 per minute per installation using D1, with no additional binding required. The app can copy a result; purchasing the number and assigning its TeXML application remain in Telnyx.
 
 ## Callback and call behavior
 

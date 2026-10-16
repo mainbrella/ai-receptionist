@@ -7,11 +7,14 @@ import {
 import { handleTwilioRequest } from "./voice-twilio";
 import { handleTelnyxRequest } from "./voice-telnyx";
 import { telnyxConfigured, telnyxSipUri } from "../lib/voice-telnyx";
+import { handleVoiceNumberSearch } from "./voice-number-search";
+import { resolveVoiceModels, speechModelAvailable, speechOptions } from "../lib/voice-options";
 
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 export async function handleVoiceRequest(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
   const url = new URL(request.url);
+  if (url.pathname === "/voice/numbers/search") return handleVoiceNumberSearch(request, env);
   // Carriers authenticate their own signed requests; they cannot use admin routes.
   if (url.pathname.startsWith("/voice/twilio/")) return handleTwilioRequest(request, env, ctx);
   if (url.pathname.startsWith("/voice/telnyx/")) return handleTelnyxRequest(request, env, ctx);
@@ -27,7 +30,8 @@ export async function handleVoiceRequest(request: Request, env: Env, ctx: Execut
     const agent = await readAgent(env, user.id);
     const id = agent?.id ?? null;
     const origin = publicVoiceOrigin(env);
-    return authJson({ enabled: voiceEnabled(env), browserCalling: voiceEnabled(env), models: VOICE_MODELS,
+    return authJson({ enabled: voiceEnabled(env), browserCalling: voiceEnabled(env),
+      models: agent ? resolveVoiceModels(publicAgent(agent)) : VOICE_MODELS, speech: speechOptions(env),
       telephony: {
         configured: telephonyConfigured(env, id) || telnyxConfigured(env, id),
         twilioConfigured: telephonyConfigured(env, id),
@@ -52,10 +56,13 @@ export async function handleVoiceRequest(request: Request, env: Env, ctx: Execut
     const parsed = voiceAgentInput.safeParse(await readJSON(request, 40_000));
     if (!parsed.success) return authJson({ error: "invalid_request" }, 400);
     const input = parsed.data;
-    await env.DB.prepare(`INSERT INTO voice_agents(id,user_id,name,business_name,greeting,instructions,voice,updated_at)
-      VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(user_id) DO UPDATE SET name=excluded.name,business_name=excluded.business_name,
-      greeting=excluded.greeting,instructions=excluded.instructions,voice=excluded.voice,updated_at=excluded.updated_at`)
-      .bind(AGENT_ID, user.id, input.name, input.businessName, input.greeting, input.instructions, input.voice, new Date().toISOString()).run();
+    if (!speechModelAvailable(env, input.model)) return authJson({ error: "voice_model_unavailable" }, 503);
+    await env.DB.prepare(`INSERT INTO voice_agents(id,user_id,name,business_name,greeting,instructions,voice,voice_logic,model,language,updated_at)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(user_id) DO UPDATE SET name=excluded.name,business_name=excluded.business_name,
+      greeting=excluded.greeting,instructions=excluded.instructions,voice=excluded.voice,voice_logic=excluded.voice_logic,
+      model=excluded.model,language=excluded.language,updated_at=excluded.updated_at`)
+      .bind(AGENT_ID, user.id, input.name, input.businessName, input.greeting, input.instructions, input.voice,
+        input.voiceLogic, input.model, input.language, new Date().toISOString()).run();
     return authJson({ agent: publicAgent((await readAgent(env, user.id))!) });
   }
   if (url.pathname === "/voice/calls") {
@@ -71,6 +78,7 @@ export async function handleVoiceRequest(request: Request, env: Env, ctx: Execut
     if (!input || Object.keys(input).length !== 1 || !["browser", "text"].includes(String(input.channel))) return authJson({ error: "invalid_request" }, 400);
     const agent = await readAgent(env, user.id);
     if (!agent) return authJson({ error: "agent_required" }, 409);
+    if (!speechModelAvailable(env, agent.model ?? 'aura-1')) return authJson({ error: "voice_model_unavailable" }, 503);
     const call = await createCall(env, user.id, publicAgent(agent), input.channel as "browser" | "text");
     if (!call) return authJson({ error: "voice_call_limit" }, 429);
     try { await initializeCall(env, call); }

@@ -48,11 +48,15 @@ npm run db:migrate:remote
 npm run deploy
 ```
 
-Set the origin and any non-secret provider settings in the Cloudflare Worker settings or `wrangler.jsonc`. Set optional provider secrets with `npx wrangler secret put TWILIO_AUTH_TOKEN` and/or `npx wrangler secret put TELNYX_API_KEY`. See [Phone connections](docs/telephony.md) for the complete provider configuration. Appflare installs provision D1, Durable Objects, migrations, and the generated admin password automatically.
+Set the origin and any non-secret provider settings in the Cloudflare Worker settings or `wrangler.jsonc`. Set optional provider secrets with `npx wrangler secret put TWILIO_AUTH_TOKEN` and/or `npx wrangler secret put TELNYX_API_KEY`. See [Phone connections](docs/telephony.md) for the complete provider configuration and number search. Appflare installs provision D1, Durable Objects, migrations, and the generated admin password automatically.
+
+For an existing installation, run `npm run db:migrate:remote` before deploying this update. The new migrations preserve receptionists and call history while adding speech settings and phone-search limits. Use `npm run db:migrate:local` for a local installation.
 
 ## Behavior and limits
 
-The receptionist uses Workers AI Flux for speech recognition, Llama 3.3 for responses, and Aura-1 for speech generation. Available voices are Asteria, Luna, and Athena. Calls are limited to three active at once, 100 starts in a rolling 24-hour window, 15 minutes per call, and 60 turns.
+The default is Aura-1 in English, with Flux speech recognition and Llama responses. Settings also offer Aura-2 and optional Deepgram or Cartesia speech through AI Gateway, with ten languages across the model catalog. Non-English calls use Nova-3 recognition and Gemma replies. See [Speech models and languages](docs/voice-languages.md) for provider setup and supported combinations.
+
+Voice logic defaults to the standard response. The experimental **Reply right away** mode plays a short acknowledgment in the selected language while the answer is generated. Each call uses a snapshot of its saved settings. Calls are limited to three active at once, 100 starts in a rolling 24-hour window, 15 minutes per call, and 60 turns.
 
 Transcripts are retained for 30 days by default. `TRANSCRIPT_RETENTION_DAYS` accepts 1–365; invalid values use 30. The daily cleanup removes expired transcript and saved-call configuration data while retaining minimal call/provider tombstones for replay protection and quota accounting. Deleting a completed or failed transcript also purges its temporary Durable Object state. Audio is not recorded.
 

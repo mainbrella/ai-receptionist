@@ -1,10 +1,26 @@
 import { Agent, type Connection, type ConnectionContext } from "agents";
-import { withVoice, WorkersAIFluxSTT, type TTSProvider, type VoiceTurnContext } from "@cloudflare/voice";
+import { withVoice, WorkersAIFluxSTT, WorkersAINova3STT, type Transcriber, type TTSProvider, type TextSource, type VoiceTurnContext } from "@cloudflare/voice";
 import { hangupTwilioCall } from "../lib/voice-telephony";
 import { hangupTelnyxCall } from "../lib/voice-telnyx";
-import { MAX_CALL_MS, MAX_TURNS, readCall, receptionistMessages, VOICE_MODELS, type VoiceAgentConfig, type VoiceCallRow } from "../lib/voice";
+import { isVoiceBackchannel, voiceAcknowledgment, withVoiceBackchannel } from "../lib/voice-backchannel";
+import { MAX_CALL_MS, MAX_TURNS, readCall, receptionistMessages, type VoiceAgentConfig, type VoiceCallRow } from "../lib/voice";
+
+import { resolveVoiceModels } from "../lib/voice-options";
+import { synthesizeVoiceSpeech } from "../lib/voice-speech";
 
 const VoiceAgent = withVoice(Agent, { audioFormat: "pcm16", sampleRate: 16000, historyLimit: 20, maxMessageCount: MAX_TURNS * 2 + 1 });
+const IMMEDIATE_REPLIES = {
+  en: ['One second please.', 'Got it, just a sec.', 'I see, let me think.'],
+  es: ['Un momento, por favor.', 'Entendido, un segundo.', 'Déjeme pensar.'],
+  fr: ['Un instant, s’il vous plaît.', 'D’accord, un instant.', 'Laissez-moi réfléchir.'],
+  de: ['Einen Moment bitte.', 'Verstanden, einen Augenblick.', 'Lassen Sie mich überlegen.'],
+  hi: ['एक क्षण, कृपया।', 'समझ गया, एक क्षण।', 'मुझे सोचने दीजिए।'],
+  ru: ['Одну секунду, пожалуйста.', 'Понятно, одну минуту.', 'Дайте подумать.'],
+  pt: ['Um momento, por favor.', 'Entendido, só um instante.', 'Deixe-me pensar.'],
+  ja: ['少々お待ちください。', '承知しました。', '少し考えさせてください。'],
+  it: ['Un momento, per favore.', 'Capito, un secondo.', 'Mi lasci pensare.'],
+  nl: ['Een ogenblik alstublieft.', 'Begrepen, een moment.', 'Laat me even nadenken.'],
+};
 interface CallState {
   callId: string;
   channel: VoiceCallRow["channel"];
@@ -25,7 +41,24 @@ interface SocketState { accepted: boolean; started: boolean; ready?: boolean }
 export class ReceptionistCall extends VoiceAgent<Cloudflare.Env & Env, CallState | null> {
   static options = { sendIdentityOnConnect: false };
   initialState: CallState | null = null;
-  transcriber = new WorkersAIFluxSTT(this.env.AI);
+  createTranscriber(): Transcriber {
+    const language = this.state?.config.language ?? 'en';
+    if (language === 'en') return new WorkersAIFluxSTT(this.env.AI);
+    return { createSession: options => new WorkersAINova3STT({
+      run: async (model,input,runOptions) => {
+        const response = await this.env.AI.run(model as Parameters<Ai['run']>[0],input,runOptions) as unknown as Response;
+        // The installed Nova adapter forwards transcripts but omits SpeechStarted.
+        // Forward upstream VAD so phone callers can interrupt without client VAD.
+        response.webSocket?.addEventListener('message',event=>{
+          if (typeof event.data !== 'string') return;
+          try { if (JSON.parse(event.data).type==='SpeechStarted') options?.onSpeechStart?.(); } catch { /* Ignore non-JSON provider events. */ }
+        });
+        return response;
+      },
+    }, { language, endpointingMs: 500 }).createSession(options) };
+  }
+  private models() { return resolveVoiceModels(this.state?.config ?? {}); }
+  protected fetchSpeech: typeof fetch = fetch;
   private writes: Promise<unknown> = Promise.resolve();
   private finalization: Promise<void> | null = null;
   private windowStart = 0;
@@ -34,6 +67,9 @@ export class ReceptionistCall extends VoiceAgent<Cloudflare.Env & Env, CallState
   private lastTurn = 0;
   private activeInference = 0;
   private audioWrites: Promise<void> = Promise.resolve();
+  private ttsWrites: Promise<void> = Promise.resolve();
+  private immediateReplyAudio: ArrayBuffer[] = [];
+  private backchannelAudio = new Map<string, Promise<ArrayBuffer | null>>();
 
   private async inferenceFailure(): Promise<void> {
     for (const connection of this.getConnections()) {
@@ -43,21 +79,60 @@ export class ReceptionistCall extends VoiceAgent<Cloudflare.Env & Env, CallState
     await this.finish(true);
   }
 
-  tts: TTSProvider = { synthesize: async (text, signal) => {
-    if (!this.state || this.state.closed) throw new Error("call_ended");
+  tts: TTSProvider = { synthesize: (text, signal) => {
+    if (!this.usesLegacyBackchannel() || !isVoiceBackchannel(text)) return this.queueSpeech(text, signal);
+    const phrase = text.trim();
+    let audio = this.backchannelAudio.get(phrase);
+    if (!audio) {
+      // This call's voice is fixed, so reuse warmed PCM for every matching filler.
+      audio = this.queueSpeech(phrase, undefined, true);
+      this.backchannelAudio.set(phrase, audio);
+    }
+    return audio.then((result) => signal?.aborted || this.state?.closed ? null : result);
+  } };
+
+  private queueSpeech(text: string, signal?: AbortSignal, optional = false): Promise<ArrayBuffer | null> {
     this.activeInference++;
+    // The SDK may request several sentence clips at once. Keep inference and
+    // response-body consumption in one queue so provider calls stay serial.
+    const task = this.ttsWrites.then(() => this.synthesizeSpeech(text, signal, optional));
+    this.ttsWrites = task.then(() => {}, () => {});
+    return task.finally(() => { this.activeInference--; });
+  }
+
+  private async synthesizeSpeech(text: string, signal?: AbortSignal, optional = false): Promise<ArrayBuffer | null> {
+    if (!this.state || this.state.closed || signal?.aborted) return null;
     try {
       const timeout = AbortSignal.timeout(30_000);
-      const response = await this.env.AI.run(VOICE_MODELS.tts, {
-        text, speaker: this.state.config.voice, encoding: "linear16", container: "none", sample_rate: 16000,
-      }, { returnRawResponse: true, signal: signal ? AbortSignal.any([signal, timeout]) : timeout }) as Response;
-      if (!response.ok) throw new Error("tts_failed");
-      return await response.arrayBuffer();
+      const requestSignal = signal ? AbortSignal.any([signal, timeout]) : timeout;
+      return await synthesizeVoiceSpeech(this.env, this.state.config, text, requestSignal, this.fetchSpeech);
     } catch (error) {
+      if (optional) {
+        console.error("voice_tts_filler_failed", { error: error instanceof Error ? error.message.slice(0, 200) : "unknown" });
+        return null;
+      }
       if (!signal?.aborted) await this.inferenceFailure();
       throw error;
-    } finally { this.activeInference--; }
-  } };
+    }
+  }
+
+  private usesLegacyBackchannel(): boolean {
+    // Preserve existing in-flight snapshots while newly saved agents use the
+    // explicit modes. The older filler vocabulary only supports English.
+    return Boolean(this.state && this.state.channel !== "text" && !this.state.config.voiceLogic
+      && (!this.state.config.language || this.state.config.language === "en"));
+  }
+
+  private async prepareImmediateReply(): Promise<void> {
+    if (!this.state || this.state.closed || this.state.channel === "text" || this.state.config.voiceLogic !== "reply_right_away") return;
+    // Prepare serially before the greeting. A failed optional clip must never
+    // close the call or hold up a later answer with repeated synthesis attempts.
+    for (const text of IMMEDIATE_REPLIES[this.state.config.language ?? "en"]) {
+      const audio = await this.queueSpeech(text, undefined, true);
+      if (!audio || this.state.closed) return;
+      this.immediateReplyAudio.push(audio);
+    }
+  }
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env as Cloudflare.Env & Env);
@@ -136,7 +211,9 @@ export class ReceptionistCall extends VoiceAgent<Cloudflare.Env & Env, CallState
   }
 
   async beforeCallStart(_connection: Connection): Promise<boolean> {
-    return Boolean(this.state && !this.state.closed && this.state.channel !== "text");
+    if (!this.state || this.state.closed || this.state.channel === "text") return false;
+    await this.prepareImmediateReply();
+    return !this.state.closed;
   }
   async onCallStart(connection: Connection) {
     if (!this.state || this.state.closed) return;
@@ -155,20 +232,37 @@ export class ReceptionistCall extends VoiceAgent<Cloudflare.Env & Env, CallState
     }
     return transcript;
   }
-  async onTurn(transcript: string, context: VoiceTurnContext): Promise<string> {
-    if (!this.state || this.state.closed || this.state.turns >= MAX_TURNS || transcript.length > 4000 || Date.now() - this.lastTurn < 750) {
+  async onTurn(transcript: string, context: VoiceTurnContext): Promise<TextSource> {
+    const reply = this.generateReply(transcript, context);
+    if (!this.usesLegacyBackchannel()) return reply;
+    return withVoiceBackchannel(reply, context.signal, this.state?.turns || 1);
+  }
+
+  private async generateReply(transcript: string, context: VoiceTurnContext): Promise<string> {
+    const replyRightAway = this.state?.config.voiceLogic === "reply_right_away" && this.state.channel !== "text";
+    const rapidOriginalTurn = !replyRightAway && Date.now() - this.lastTurn < 750;
+    if (!this.state || this.state.closed || this.state.turns >= MAX_TURNS || transcript.length > 4000 || rapidOriginalTurn) {
       await this.finish(); throw new Error("Call limit reached");
     }
     this.lastTurn = Date.now();
     this.setState({ ...this.state, turns: this.state.turns + 1 });
+    if (replyRightAway && (context.connection.state as SocketState | null)?.started && this.immediateReplyAudio.length && !context.signal.aborted) {
+      // Cue audio belongs to this turn but is excluded from conversation history.
+      // speak() would abort the active turn, so send the cached PCM directly.
+      try {
+        context.connection.send(JSON.stringify({ type: "status", status: "speaking" }));
+        context.connection.send(this.immediateReplyAudio[(this.state.turns - 1) % this.immediateReplyAudio.length]);
+      } catch { /* The caller may have disconnected. */ }
+    }
     await this.flush();
     this.activeInference++;
     try {
-      const response = await this.env.AI.run(VOICE_MODELS.llm, {
+      const response = await this.env.AI.run(this.models().llm as Parameters<Ai['run']>[0], {
         messages: receptionistMessages(this.state.config, context.messages, transcript), max_tokens: 256, temperature: 0.4,
-      }, { signal: AbortSignal.any([context.signal, AbortSignal.timeout(30_000)]) }) as { response?: string };
+        ...(this.state.config.language && this.state.config.language !== "en" ? { chat_template_kwargs: { enable_thinking: false } } : {}),
+      }, { signal: AbortSignal.any([context.signal, AbortSignal.timeout(30_000)]) }) as { response?: string; choices?: Array<{ message?: { content?: string | null } }> };
       if (this.state.closed || context.signal.aborted) throw new Error("call_ended");
-      const text = response.response?.trim().slice(0, 4000);
+      const text = (response.response ?? response.choices?.[0]?.message?.content)?.trim().slice(0, 4000);
       if (!text) throw new Error("empty_response");
       return text;
     } catch {
@@ -179,6 +273,11 @@ export class ReceptionistCall extends VoiceAgent<Cloudflare.Env & Env, CallState
 
   saveMessage(role: "user" | "assistant", text: string): void {
     super.saveMessage(role, text);
+    if (role === "assistant" && this.state && !this.state.closed && this.usesLegacyBackchannel()) {
+      // Warm the next turn's acknowledgment while this assistant reply plays.
+      const warm = this.tts.synthesize(voiceAcknowledgment(this.state.turns + 1));
+      this.ctx.waitUntil(warm.then(() => {}, () => {}));
+    }
     const callId = this.state?.callId;
     if (!callId) return;
     const transcript = JSON.stringify(this.getConversationHistory(MAX_TURNS * 2 + 1).map((message) => ({ role: message.role, text: message.content })));

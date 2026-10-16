@@ -19,3 +19,10 @@ VOICE_PUBLIC_ORIGIN="http://localhost:8787"
 # TELNYX_CONNECTION_ID=""
 # TELNYX_PHONE_NUMBER=""
 # TELNYX_SIP_URI=""
+
+# Optional multilingual speech through an existing Cloudflare AI Gateway:
+# VOICE_AI_GATEWAY_ACCOUNT_ID=""
+# VOICE_AI_GATEWAY_ID=""
+# VOICE_AI_GATEWAY_TOKEN=""
+# DEEPGRAM_API_KEY=""
+# CARTESIA_API_KEY=""

@@ -7,6 +7,11 @@ interface Env {
   VOICE_ENABLED?: string;
   VOICE_PUBLIC_ORIGIN?: string;
   TRANSCRIPT_RETENTION_DAYS?: string;
+  VOICE_AI_GATEWAY_ACCOUNT_ID?: string;
+  VOICE_AI_GATEWAY_ID?: string;
+  VOICE_AI_GATEWAY_TOKEN?: string;
+  DEEPGRAM_API_KEY?: string;
+  CARTESIA_API_KEY?: string;
   TWILIO_AUTH_TOKEN?: string;
   TWILIO_ACCOUNT_SID?: string;
   TWILIO_PHONE_NUMBER?: string;

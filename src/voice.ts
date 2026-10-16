@@ -1,8 +1,10 @@
 import type { VoiceClient, VoicePipelineMetrics } from '@cloudflare/voice/client';
 import { API_ORIGIN, createAuthClient } from './auth.ts';
 import { createVoiceAPI, VoiceAPIError, callDuration, channelLabel, voiceSocketURL,
-  type Receptionist, type VoiceCall, type VoiceConfig, type VoiceMessage } from './voice-api.ts';
+  type Receptionist, type VoiceCall, type VoiceConfig, type VoiceLogic, type VoiceMessage,
+  type VoiceSpeechOptions, type VoiceModel, type VoiceLanguage } from './voice-api.ts';
 import { CallTransport } from './voice-transport.ts';
+import { initializeNumberSearch } from './voice-number-search.ts';
 
 const element = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 const main = element('main');
@@ -20,6 +22,10 @@ const business = element<HTMLInputElement>('voice-business');
 const greeting = element<HTMLTextAreaElement>('voice-greeting');
 const instructions = element<HTMLTextAreaElement>('voice-instructions');
 const speaker = element<HTMLSelectElement>('voice-speaker');
+const voiceModel = element<HTMLSelectElement>('voice-model');
+const language = element<HTMLSelectElement>('voice-language');
+const languageHint = element('voice-language-hint');
+const voiceLogic = element<HTMLSelectElement>('voice-logic');
 const mode = element<HTMLFieldSetElement>('voice-test-mode');
 const start = element<HTMLButtonElement>('voice-start');
 const mute = element<HTMLButtonElement>('voice-mute');
@@ -48,6 +54,43 @@ const deleteCall = element<HTMLButtonElement>('voice-delete-call');
 const deleteStatus = element('voice-delete-status');
 const api = createVoiceAPI(API_ORIGIN);
 let config: VoiceConfig | null = null;
+const legacySpeech: VoiceSpeechOptions = {
+  languages: [{ code: 'en', name: 'English' }],
+  models: [{ id: 'aura-1', name: 'Aura-1', available: true, unavailableReason: null,
+    languages: [{ code: 'en', voices: [
+      { id: 'asteria', name: 'Asteria' }, { id: 'luna', name: 'Luna' }, { id: 'athena', name: 'Athena' },
+    ] }] }],
+};
+function speechOptions() { return config?.speech ?? legacySpeech; }
+function modelAvailable(model: VoiceModel = 'aura-1') {
+  return Boolean(speechOptions().models.find(option => option.id === model)?.available);
+}
+
+function renderSpeechOptions(model = voiceModel.value, code = language.value, voice = speaker.value) {
+  const options = speechOptions();
+  voiceModel.replaceChildren(...options.models.map(item => {
+    const option = new Option(`${item.name}${item.available ? '' : ` · ${item.unavailableReason || 'Unavailable'}`}`, item.id);
+    option.disabled = !item.available;
+    return option;
+  }));
+  voiceModel.value = options.models.some(item => item.id === model) ? model : 'aura-1';
+  const selected = options.models.find(item => item.id === voiceModel.value)!;
+  const supported = new Set(selected.languages.map(item => item.code));
+  language.replaceChildren(...options.languages.map(item => {
+    const option = new Option(`${item.name}${supported.has(item.code) ? '' : ' · Not supported'}`, item.code);
+    option.disabled = !supported.has(item.code);
+    return option;
+  }));
+  language.value = supported.has(code as VoiceLanguage) ? code : selected.languages[0].code;
+  const voices = selected.languages.find(item => item.code === language.value)!.voices;
+  speaker.replaceChildren(...voices.map(item => new Option(item.name, item.id)));
+  speaker.value = voices.some(item => item.id === voice) ? voice : voices[0].id;
+  languageHint.textContent = selected.available
+    ? `${selected.languages.length} of ${options.languages.length} languages supported.`
+    : 'This model is currently unavailable. Choose another model to save or start a call.';
+}
+voiceModel.addEventListener('change', () => { renderSpeechOptions(); controls(); });
+language.addEventListener('change', () => { renderSpeechOptions(); controls(); });
 let agent: Receptionist | null = null;
 let client: VoiceClient | null = null;
 let activeCall: VoiceCall | null = null;
@@ -63,10 +106,14 @@ let startedAt = 0;
 let clock: ReturnType<typeof setInterval> | undefined;
 let connectAbort: AbortController | null = null;
 let selectedMode: 'browser' | 'text' = 'browser';
+const disposeNumberSearch = initializeNumberSearch(api, { isDisposed: () => disposed,
+  onAuthError: caught => showError(error, caught, 'Sign in again to search numbers.') });
 
-function draft(): Omit<Receptionist, 'id' | 'updatedAt'> {
+function draft(): Omit<Receptionist, 'id' | 'updatedAt'> & { voiceLogic: VoiceLogic } {
   return { name: agentName.value.trim(), businessName: business.value.trim(), greeting: greeting.value.trim(),
-    instructions: instructions.value.trim(), voice: speaker.value as Receptionist['voice'], transferNumber: null };
+    instructions: instructions.value.trim(), voice: speaker.value,
+    model: voiceModel.value as VoiceModel, language: language.value as VoiceLanguage,
+    voiceLogic: voiceLogic.value as VoiceLogic, transferNumber: null };
 }
 
 function isDirty() { return JSON.stringify(draft()) !== savedValue; }
@@ -80,6 +127,7 @@ function showError(target: HTMLElement, caught: unknown, fallback: string) {
     signIn.hidden = false;
     element<HTMLButtonElement>('voice-sign-out').hidden = true;
     retry.hidden = true;
+    disposeNumberSearch();
     disposed = true;
     disconnect();
     if (activeCall) void finishCall();
@@ -89,20 +137,21 @@ function showError(target: HTMLElement, caught: unknown, fallback: string) {
 function controls() {
   const busy = starting || ending;
   fields.disabled = saving || busy || disposed;
-  save.disabled = saving || busy || disposed || (agent !== null && !isDirty());
+  save.disabled = saving || busy || disposed || !modelAvailable(voiceModel.value as VoiceModel) || (agent !== null && !isDirty());
   mode.disabled = busy || activeCall !== null;
-  start.disabled = !agent || !config?.enabled || !config.browserCalling || busy || saving || disposed;
+  start.disabled = !agent || !modelAvailable(agent.model) || !config?.enabled || !config.browserCalling || busy || saving || disposed;
   start.hidden = activeCall !== null || selectedMode === 'text';
   mute.hidden = !activeCall || activeCall.channel !== 'browser';
   mute.disabled = busy;
   end.hidden = !activeCall;
   end.disabled = ending;
   messageForm.hidden = selectedMode !== 'text';
-  messageInput.disabled = busy || saving || !agent || !config?.enabled || !config.browserCalling || turnPending || disposed;
+  messageInput.disabled = busy || saving || !agent || !modelAvailable(agent.model) || !config?.enabled || !config.browserCalling || turnPending || disposed;
   send.disabled = messageInput.disabled || !messageInput.value.trim();
   stateDot.dataset.active = String(activeCall !== null);
   if (!activeCall && !busy) callStatus.textContent = !agent ? 'Save your receptionist to start testing.'
-    : !config?.enabled || !config.browserCalling ? 'Calling is not enabled yet.' : 'Ready to test';
+    : !config?.enabled || !config.browserCalling ? 'Calling is not enabled yet.'
+    : !modelAvailable(agent.model) ? 'Choose an available voice model and save your settings.' : 'Ready to test';
   testHint.textContent = selectedMode === 'text' ? 'Try your instructions without using a microphone.' : 'Use your microphone to have a real conversation.';
 }
 
@@ -151,6 +200,9 @@ function renderPhone() {
   renderProvider('twilio', { ...config.telephony, configured: config.telephony.twilioConfigured });
   renderProvider('telnyx', config.telephony.telnyx);
   element('voice-model-label').textContent = config.models.llm.replace(/^@cf\//, '');
+  element('voice-stt-label').textContent = config.models.stt.includes('nova-3') ? 'Deepgram Nova-3' : 'Deepgram Flux';
+  element('voice-tts-label').textContent = config.models.tts.startsWith('cartesia/') ? 'Cartesia Sonic 3.6'
+    : config.models.tts.includes('aura-2') ? 'Deepgram Aura-2' : 'Deepgram Aura-1';
 }
 
 async function load() {
@@ -178,9 +230,13 @@ async function load() {
       business.value = agent.businessName;
       greeting.value = agent.greeting;
       instructions.value = agent.instructions;
-      speaker.value = agent.voice;
-      savedValue = JSON.stringify(draft());
-    } else savedValue = JSON.stringify(draft());
+      renderSpeechOptions(agent.model ?? 'aura-1', agent.language ?? 'en', agent.voice);
+      voiceLogic.value = agent.voiceLogic === 'reply_right_away' ? 'reply_right_away' : 'original_no_reply';
+    } else {
+      renderSpeechOptions('aura-1', 'en', 'asteria');
+      voiceLogic.value = 'original_no_reply';
+    }
+    savedValue = JSON.stringify(draft());
     content.hidden = false;
     signIn.hidden = true;
     element<HTMLButtonElement>('voice-sign-out').hidden = false;
@@ -198,7 +254,7 @@ async function load() {
 
 form.addEventListener('submit', async event => {
   event.preventDefault();
-  if (saving || starting || ending || disposed || !form.reportValidity()) return;
+  if (saving || starting || ending || disposed || !modelAvailable(voiceModel.value as VoiceModel) || !form.reportValidity()) return;
   saving = true;
   error.hidden = true;
   saveStatus.textContent = '';
@@ -210,7 +266,7 @@ form.addEventListener('submit', async event => {
     agent = result.agent;
     savedValue = JSON.stringify(draft());
     saveStatus.textContent = 'Saved. New calls will use these settings.';
-    try { config = await api.config(); renderPhone(); }
+    try { config = await api.config(); renderSpeechOptions(); renderPhone(); }
     catch (caught) { if (caught instanceof VoiceAPIError && caught.status === 401) showError(error, caught, 'Sign in again to continue.'); }
   } catch (caught) {
     showError(error, caught, 'Could not save your receptionist. Please try again.');
@@ -468,8 +524,9 @@ async function viewCall(call: VoiceCall) {
 }
 
 function selectTab(value: string) {
-  const tab = ['agent', 'calls', 'phone'].includes(value) ? value : 'agent';
-  ['agent', 'calls', 'phone'].forEach(name => {
+  const sections = ['agent', 'calls', 'phone', 'numbers'];
+  const tab = sections.includes(value) ? value : 'agent';
+  sections.forEach(name => {
     const button = element(`tab-${name}`);
     button.setAttribute('aria-selected', String(name === tab));
     button.tabIndex = name === tab ? 0 : -1;
@@ -548,6 +605,7 @@ window.addEventListener('beforeunload', event => {
   if (!disposed && (!content.hidden && isDirty() || activeCall !== null)) { event.preventDefault(); event.returnValue = ''; }
 });
 window.addEventListener('pagehide', () => {
+  disposeNumberSearch();
   disposed = true;
   const call = activeCall;
   activeCall = null;

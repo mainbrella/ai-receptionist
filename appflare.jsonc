@@ -26,12 +26,17 @@
   "secrets": [
     { "name": "ADMIN_PASSWORD", "label": "Admin password", "help": "Sign in to the receptionist workspace. Use at least 16 characters.", "generate": "password" },
     { "name": "TWILIO_AUTH_TOKEN", "label": "Twilio auth token", "help": "Optional. Used to verify incoming Twilio calls and end them.", "optional": true, "link": { "label": "Twilio console", "url": "https://console.twilio.com" } },
-    { "name": "TELNYX_API_KEY", "label": "Telnyx API key", "help": "Optional. A v2 API key with access to your TeXML calls.", "optional": true, "link": { "label": "Telnyx portal", "url": "https://portal.telnyx.com" } }
+    { "name": "TELNYX_API_KEY", "label": "Telnyx API key", "help": "Optional. A v2 API key for number search and your TeXML calls.", "optional": true, "link": { "label": "Telnyx portal", "url": "https://portal.telnyx.com" } },
+    { "name": "VOICE_AI_GATEWAY_TOKEN", "label": "AI Gateway token", "help": "Optional. Required when your speech AI Gateway uses authentication.", "optional": true },
+    { "name": "DEEPGRAM_API_KEY", "label": "Deepgram API key", "help": "Optional. Enables additional Aura-2 languages through your AI Gateway.", "optional": true },
+    { "name": "CARTESIA_API_KEY", "label": "Cartesia API key", "help": "Optional. Enables Sonic 3.6 speech through your AI Gateway.", "optional": true }
   ],
   "vars": [
     { "name": "VOICE_PUBLIC_ORIGIN", "label": "Public address", "help": "Exact HTTPS origin with no trailing slash. Used to verify carrier signatures.", "default": "{{appUrl}}" },
     { "name": "VOICE_ENABLED", "label": "Calling", "type": "select", "default": "true", "options": [{ "value": "true", "label": "Enabled" }, { "value": "false", "label": "Disabled" }] },
     { "name": "TRANSCRIPT_RETENTION_DAYS", "label": "Transcript retention in days", "help": "From 1 to 365. Old transcripts and saved call instructions are deleted daily. Invalid values use 30 days.", "default": "30" },
+    { "name": "VOICE_AI_GATEWAY_ACCOUNT_ID", "label": "AI Gateway account ID", "help": "32-character Cloudflare account ID. Required for Deepgram or Cartesia gateway speech.", "optional": true },
+    { "name": "VOICE_AI_GATEWAY_ID", "label": "AI Gateway name", "help": "Name of your existing Cloudflare AI Gateway. Required for gateway speech.", "optional": true },
     { "name": "TWILIO_ACCOUNT_SID", "label": "Twilio account SID", "help": "Starts with AC. Required when using Twilio.", "optional": true },
     { "name": "TWILIO_PHONE_NUMBER", "label": "Twilio phone number", "help": "Incoming destination in E.164 format, such as +15551234567.", "optional": true },
     { "name": "TWILIO_SIP_URI", "label": "Twilio SIP address", "help": "Optional alternative to a number: sip:receptionist@your-domain.sip.twilio.com.", "optional": true },
